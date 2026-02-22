@@ -5,6 +5,8 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
+from paths import LOGS_DIR
+
 _LOCK = threading.Lock()
 _COUNTERS = {}
 _GAUGES = {}
@@ -12,7 +14,10 @@ _SUMMARIES = {}
 
 _TRUTHY = {"1", "true", "yes", "on"}
 EVENT_LOG_ENABLED = os.getenv("OBS_EVENT_LOG_ENABLED", "true").strip().lower() in _TRUTHY
-EVENT_LOG_FILE = os.getenv("OBS_EVENT_LOG_FILE", "/home/codingai/ai-agent/logs/events.jsonl").strip()
+EVENT_LOG_FILE = os.getenv(
+    "OBS_EVENT_LOG_FILE",
+    str((LOGS_DIR / "events.jsonl").resolve()),
+).strip()
 
 
 def _utc_now_iso():

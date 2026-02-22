@@ -5,7 +5,9 @@ import time
 import requests
 from dotenv import load_dotenv
 
-load_dotenv("/home/codingai/ai-agent/.env")
+from paths import ENV_FILE, LOGS_DIR
+
+load_dotenv(str(ENV_FILE))
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _VALID_PROVIDERS = {"openai", "local"}
@@ -17,7 +19,10 @@ LLM_HEALTHCHECK_ENABLED = os.getenv("LLM_HEALTHCHECK_ENABLED", "true").strip().l
 LLM_REQUIRE_HEALTHY = os.getenv("LLM_REQUIRE_HEALTHY", "true").strip().lower() in _TRUTHY
 LLM_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("LLM_HEALTHCHECK_TIMEOUT_SECONDS", "2.5"))
 LLM_HEALTHCHECK_CACHE_SECONDS = int(os.getenv("LLM_HEALTHCHECK_CACHE_SECONDS", "45"))
-LLM_TELEMETRY_FILE = os.getenv("LLM_TELEMETRY_FILE", "/home/codingai/ai-agent/logs/llm_telemetry.jsonl").strip()
+LLM_TELEMETRY_FILE = os.getenv(
+    "LLM_TELEMETRY_FILE",
+    str((LOGS_DIR / "llm_telemetry.jsonl").resolve()),
+).strip()
 LLM_TELEMETRY_ENABLED = os.getenv("LLM_TELEMETRY_ENABLED", "true").strip().lower() in _TRUTHY
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()

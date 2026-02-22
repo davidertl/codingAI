@@ -17,7 +17,9 @@ from llm.provider import (
     try_failover,
 )
 
-load_dotenv("/home/codingai/ai-agent/.env")
+from paths import ENV_FILE
+
+load_dotenv(str(ENV_FILE))
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_429_MAX_RETRIES = int(os.getenv("OPENAI_429_MAX_RETRIES", "4"))

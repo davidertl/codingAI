@@ -28,6 +28,8 @@ ai-agent/github_app/*.pem
 *.pyc
 ai-agent/venv/
 ai-agent/state.json
+ai-agent/logs/
+ai-agent/*.jsonl
 
 # Local cloned test repositories (do not sync)
 workspaces/

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SRC_DIR="${1:-/home/codingai}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SRC_DIR="${1:-$DEFAULT_SRC_DIR}"
 REMOTE_URL="${2:-https://github.com/davidertl/codingAI.git}"
 BRANCH="${3:-localstate}"
 AUTHOR_MODE="${AUTHOR_MODE:-davidertl}"   # davidertl | bot

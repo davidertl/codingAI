@@ -2,7 +2,9 @@ import os
 import subprocess
 
 GITHUB_OWNER = "davidertl"
-WORKSPACE_ROOT = "/home/codingai/workspaces"
+from paths import WORKSPACES_DIR
+
+WORKSPACE_ROOT = str(WORKSPACES_DIR)
 
 
 def _run(cmd, *, cwd=None, check=True):

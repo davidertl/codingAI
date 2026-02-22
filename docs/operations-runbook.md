@@ -10,26 +10,41 @@
 ## Install dependencies
 
 ```bash
-cd /home/codingai/ai-agent
+cd ai-agent
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## Fresh install (Debian CLI)
+
+Use the interactive installer:
+
+```bash
+bash scripts/install_codingai.sh
+```
+
+It will:
+
+1. install OS packages (Python, Docker, Compose plugin)
+2. create `ai-agent/venv` and install Python deps
+3. write `ai-agent/.env` interactively
+4. remind you to copy the GitHub App `.pem` into `ai-agent/github_app/`
 
 ## Revalidation checklist
 
 Run this after pulling updates or before enabling workers:
 
 ```bash
-cd /tmp/codingai-localstate/ai-agent
-PYTHONPATH=. /home/codingai/ai-agent/venv/bin/python -m compileall -q .
-PYTHONPATH=. /home/codingai/ai-agent/venv/bin/python -c "import main; import service.api; print('import_ok')"
+cd ai-agent
+PYTHONPATH=. ./venv/bin/python -m compileall -q .
+PYTHONPATH=. ./venv/bin/python -c "import main; import service.api; print('import_ok')"
 ```
 
 API smoke check:
 
 ```bash
-cd /tmp/codingai-localstate/ai-agent
-PYTHONPATH=. /home/codingai/ai-agent/venv/bin/python -m uvicorn service.api:app --host 127.0.0.1 --port 8010
+cd ai-agent
+PYTHONPATH=. ./venv/bin/python -m uvicorn service.api:app --host 127.0.0.1 --port 8010
 ```
 
 In a second shell:
@@ -46,7 +61,7 @@ curl -s http://127.0.0.1:8010/repo/KRT-leadtool/summary
 ### 1. CLI loop mode
 
 ```bash
-cd /home/codingai/ai-agent
+cd ai-agent
 source venv/bin/activate
 python main.py
 ```
@@ -54,7 +69,7 @@ python main.py
 ### 2. API/control-plane mode
 
 ```bash
-cd /home/codingai
+cd .
 scripts/run_control_api.sh
 ```
 
@@ -67,12 +82,11 @@ Start API mode, then open:
 ## Common env toggles
 
 1. `TARGET_REPOS=KRT-leadtool,KRT-Com_Discord`
-2. `MAX_PRS_PER_REPO_PER_DAY=3`
-3. `MANUAL_APPROVAL_REQUIRED=true`
-4. `PR_AUTO_UPDATE_ENABLED=true`
-5. `ENABLE_GITHUB_CHECKS=true`
-6. `AUTO_GENERATE_TEST_PATCHES=false`
-7. `STRATEGY_SWITCH_CONFIDENCE_THRESHOLD=0.65`
+2. `MANUAL_APPROVAL_REQUIRED=true`
+3. `PR_AUTO_UPDATE_ENABLED=true`
+4. `ENABLE_GITHUB_CHECKS=true`
+5. `AUTO_GENERATE_TEST_PATCHES=false`
+6. `STRATEGY_SWITCH_CONFIDENCE_THRESHOLD=0.65`
 
 For local-model operation, see `local-llm-setup.md`.  
 Note: current VM state has no local model server listening on `127.0.0.1:11434`; OpenAI is the active provider via fallback.

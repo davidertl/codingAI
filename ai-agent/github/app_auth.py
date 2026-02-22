@@ -4,11 +4,13 @@ import requests
 import os
 from dotenv import load_dotenv
 
-load_dotenv("/home/codingai/ai-agent/.env")
+from paths import ENV_FILE, GITHUB_APP_PEM_FILE
+
+load_dotenv(str(ENV_FILE))
 
 APP_ID = os.getenv("GITHUB_APP_ID")
 INSTALLATION_ID = os.getenv("GITHUB_INSTALLATION_ID")
-PRIVATE_KEY_PATH = "/home/codingai/ai-agent/github_app/KRT-AI-Agent.pem"
+PRIVATE_KEY_PATH = str(GITHUB_APP_PEM_FILE)
 
 _cached_token = None
 _token_expiry = 0

@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+from paths import AI_AGENT_DIR
+
 _TRUTHY = {"1", "true", "yes", "on"}
 _POLICY_CACHE = None
 _POLICY_CACHE_AT = 0.0
@@ -88,14 +90,7 @@ def _resolve_policy_dir():
     if env_dir:
         return env_dir
 
-    repo_local = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "policies"))
-    if os.path.isdir(repo_local):
-        return repo_local
-
-    canonical = "/home/codingai/ai-agent/config/policies"
-    if os.path.isdir(canonical):
-        return canonical
-
+    repo_local = os.path.abspath(os.path.join(str(AI_AGENT_DIR), "config", "policies"))
     return repo_local
 
 

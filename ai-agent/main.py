@@ -4,6 +4,8 @@ import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
+
 from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
@@ -29,6 +31,7 @@ from github.pr_manager import (
 from github.repo_manager import clone_or_update
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
+from paths import ENV_FILE, STATE_FILE
 
 AVAILABLE_REPOS = [
     "KRT-leadtool",
@@ -38,21 +41,22 @@ TARGET_REPOS_ENV = os.getenv("TARGET_REPOS", "").strip()
 if TARGET_REPOS_ENV:
     AVAILABLE_REPOS = [r.strip() for r in TARGET_REPOS_ENV.split(",") if r.strip()]
 
-STATE_FILE = "/home/codingai/ai-agent/state.json"
 POLL_INTERVAL = 300
 REPORT_MARKER = "<!-- codingai-test-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+load_dotenv(str(ENV_FILE))
+
 
 def load_state():
-    if not os.path.exists(STATE_FILE):
+    if not os.path.exists(str(STATE_FILE)):
         return {}
-    with open(STATE_FILE, "r") as f:
+    with open(str(STATE_FILE), "r") as f:
         return json.load(f)
 
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
+    with open(str(STATE_FILE), "w") as f:
         json.dump(state, f, indent=2)
 
 

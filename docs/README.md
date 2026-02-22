@@ -10,6 +10,7 @@ This folder documents the current implementation state and operating model of Co
 1. `current-state.md` for verified phase status and runtime findings.
 2. `operations-runbook.md` for install/run/troubleshooting and revalidation checks.
 3. `agent-architecture-current.md` for module and control-flow map.
+4. `installation.md` for fresh Debian CLI install steps.
 
 ## Validation snapshot
 
@@ -26,6 +27,7 @@ This docs refresh is based on live checks run against current code:
 - `agent-architecture-current.md`: end-to-end control flow and module map.
 - `strategy-mapping.md`: adaptive test strategy detection and selection behavior.
 - `operations-runbook.md`: operational procedures and API/runtime checks.
+- `installation.md`: clean install + first-run setup for Debian CLI hosts.
 - `local-llm-setup.md`: local model setup, fallback behavior, and telemetry controls.
 - `phase8-api-control-plane.md`: FastAPI control plane endpoints and examples.
 - `phase9-web-ui-mvp.md`: dashboard usage and controls.
