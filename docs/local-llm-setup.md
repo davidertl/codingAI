@@ -19,6 +19,12 @@ export LOCAL_LLM_API_MODE=chat
 export LOCAL_LLM_MODEL=qwen2.5-coder:7b
 ```
 
+## Current VM status (2026-02-22 UTC)
+
+1. `http://127.0.0.1:11434/v1/models` is currently unreachable (no local model server running).
+2. With default fallback enabled, runtime selects OpenAI when local health check fails.
+3. If fallback is disabled and `LLM_PROVIDER=local`, agent readiness becomes `false` until local endpoint is healthy.
+
 ## Reliability controls
 
 1. `LLM_FALLBACK_ENABLED=true`
@@ -45,6 +51,14 @@ After bootstrap, validate:
 
 ```bash
 curl -s http://127.0.0.1:11434/v1/models
+```
+
+Strict local-only validation (no fallback):
+
+```bash
+cd /tmp/codingai-localstate/ai-agent
+PYTHONPATH=. LLM_PROVIDER=local LLM_FALLBACK_ENABLED=false LLM_REQUIRE_HEALTHY=true \
+  /home/codingai/ai-agent/venv/bin/python -c "from llm.provider import ensure_llm_ready; print(ensure_llm_ready(force=True))"
 ```
 
 ## Notes

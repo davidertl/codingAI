@@ -15,6 +15,32 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Revalidation checklist
+
+Run this after pulling updates or before enabling workers:
+
+```bash
+cd /tmp/codingai-localstate/ai-agent
+PYTHONPATH=. /home/codingai/ai-agent/venv/bin/python -m compileall -q .
+PYTHONPATH=. /home/codingai/ai-agent/venv/bin/python -c "import main; import service.api; print('import_ok')"
+```
+
+API smoke check:
+
+```bash
+cd /tmp/codingai-localstate/ai-agent
+PYTHONPATH=. /home/codingai/ai-agent/venv/bin/python -m uvicorn service.api:app --host 127.0.0.1 --port 8010
+```
+
+In a second shell:
+
+```bash
+curl -s http://127.0.0.1:8010/health
+curl -s http://127.0.0.1:8010/repos
+curl -s http://127.0.0.1:8010/policies
+curl -s http://127.0.0.1:8010/repo/KRT-leadtool/summary
+```
+
 ## Run modes
 
 ### 1. CLI loop mode
@@ -48,7 +74,8 @@ Start API mode, then open:
 6. `AUTO_GENERATE_TEST_PATCHES=false`
 7. `STRATEGY_SWITCH_CONFIDENCE_THRESHOLD=0.65`
 
-For local-model operation, see `local-llm-setup.md`.
+For local-model operation, see `local-llm-setup.md`.  
+Note: current VM state has no local model server listening on `127.0.0.1:11434`; OpenAI is the active provider via fallback.
 
 ## Policy-driven governance
 
@@ -137,3 +164,7 @@ curl -s -X POST http://127.0.0.1:8000/run-once/repo/KRT-leadtool
    - Review `state.json` issue entry (`active_branch`, `source_issue_updated_at`).
 4. API worker stuck:
    - `GET /workers`, then `POST /stop/repo/{repo}` and restart.
+5. Local LLM expected but not used:
+   - Check `curl -s http://127.0.0.1:11434/v1/models`.
+   - If unavailable, start Ollama via `scripts/setup_local_llm_ollama.sh`.
+   - Confirm provider behavior from `GET /health` and `state.json -> llm_runtime`.
