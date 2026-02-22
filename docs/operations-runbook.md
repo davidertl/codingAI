@@ -25,7 +25,7 @@ bash scripts/install_codingai.sh
 
 It will:
 
-1. install OS packages (Python, Docker, Compose plugin)
+1. install OS packages (Python, Node 20, build tools, Playwright deps, Docker, Compose plugin)
 2. create `ai-agent/venv` and install Python deps
 3. write `ai-agent/.env` interactively
 4. remind you to copy the GitHub App `.pem` into `ai-agent/github_app/`
@@ -69,7 +69,7 @@ python main.py
 ### 2. API/control-plane mode
 
 ```bash
-cd .
+cd <repo-root>
 scripts/run_control_api.sh
 ```
 

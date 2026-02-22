@@ -59,21 +59,23 @@ This reflects the verified code/runtime state for `ai-agent/` on branch `localst
    - policy dir: `ai-agent/config/policies`
    - repo overrides: `KRT-leadtool`, `KRT-Com_Discord`
    - parse errors: none
-4. LLM runtime behavior verified:
-   - default runtime selected provider: `openai`
-   - local endpoint `http://127.0.0.1:11434` currently unavailable
-   - fallback from `local` to `openai` works when fallback is enabled
+4. LLM runtime behavior:
+   - local endpoint `http://127.0.0.1:11434` currently unreachable in this VM
+   - provider chain uses OpenAI as active when local is unhealthy
+   - telemetry/log files located via `paths.LOGS_DIR`
 
 ## Operational snapshot
 
-1. `state.json` currently tracks both target repos and runtime metadata (`llm_runtime`, `policy_runtime`).
-2. Branch `localstate` is ahead of `origin/localstate` by local commits in this VM.
-3. No local Ollama container/process is currently running.
+1. `state.json` (path via `paths.STATE_FILE`) tracks repos and runtime metadata (`llm_runtime`, `policy_runtime`, `strategy_memory`).
+2. Branch `localstate` is in sync with origin after latest docs push.
+3. No local Ollama container/process is running; OpenAI is active provider.
+4. Paths are resolved via `ai-agent/paths.py` (no hardcoded `/home/codingai`).
 
 ## Known gaps after Phase 12
 
 1. No authentication/authorization on the FastAPI control plane.
-2. UI is polling-based only (no websocket/SSE streaming).
-3. Runtime persistence is still local JSON (`state.json`) with no DB backend.
-4. `config/repos.yaml` is not authoritative at runtime (runtime repo list comes from `AVAILABLE_REPOS`/`TARGET_REPOS`).
-5. Advanced optional items from earlier roadmap remain open (for example, richer multi-repo orchestration and deeper self-improving test-strategy loops).
+2. UI is polling-based only (no SSE/websocket streaming).
+3. Runtime persistence is still JSON (`state.json`), not SQLite.
+4. Repo list comes from `AVAILABLE_REPOS`/`TARGET_REPOS` env, not `config/repos.yaml`.
+5. Research uses external web calls only when enabled; no local SearxNG yet.
+6. Roadmap features (Phases 13–21) are planned but not yet implemented.

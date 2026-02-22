@@ -21,16 +21,16 @@ Source: `ai-agent/core/test_runner.py`
 ## Selection policy
 
 1. First pick:
-   - Memory-biased when prior stats exist for remaining strategies.
+   - Memory-biased when history exists (score with decay/penalty).
    - Otherwise deterministic first strategy in candidate order.
 2. On failure:
    - LLM proposes next strategy from remaining options only.
-   - LLM switch is accepted only if confidence >= `min_confidence_for_switch`.
-   - Otherwise fallback uses memory pick, then first remaining.
-3. Per-attempt report captures:
-   - strategy id/description,
-   - pass/fail,
-   - error fingerprint.
+   - LLM switch accepted only if confidence >= `min_confidence_for_switch`.
+   - Else fallback to memory pick, then first remaining.
+3. Strategy quarantine:
+   - When consecutive failures hit `quarantine_threshold`, strategy is skipped until `cooldown_until`.
+   - Decay via `memory_half_life_seconds` reduces stale history weight.
+4. Per-attempt report captures strategy id/desc, result, error fingerprint.
 
 ## Strategy memory shape
 

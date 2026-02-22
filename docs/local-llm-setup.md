@@ -8,7 +8,7 @@ Source of truth: `ai-agent/llm/provider.py`
 2. `LLM_PROVIDER=local`
 3. `LLM_PROVIDER=auto` (tries providers in `LLM_PROVIDER_ORDER`)
 
-Default order is `local,openai`.
+Default: `LLM_PROVIDER=openai`, `LLM_PROVIDER_ORDER=local,openai` (so local is tried first when provider=auto).
 
 ## Required env for local mode
 
@@ -36,7 +36,7 @@ export LOCAL_LLM_MODEL=qwen2.5-coder:7b
 ## Telemetry
 
 1. `LLM_TELEMETRY_ENABLED=true`
-2. `LLM_TELEMETRY_FILE=/home/codingai/ai-agent/logs/llm_telemetry.jsonl`
+2. `LLM_TELEMETRY_FILE` defaults to `paths.LOGS_DIR/llm_telemetry.jsonl`
 
 Counters are also exposed in runtime state under `state["llm_runtime"]["telemetry_counters"]`.
 
