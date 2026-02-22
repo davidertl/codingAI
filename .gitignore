@@ -1,19 +1,36 @@
-
-#real ignore
+# Secrets and local env
 .env
+ai-agent/.env
+ai-agent/github_app/*.pem
 
-#Trash data
-.*/
-.cashe/
-.config/
-.copilot/
-.dotnet/
-.local/
-.vscode-server/
+# User/machine-local shell files
 .bash_history
 .bash_logout
-.bashhrc
+.bashrc
+.gitconfig
 .profile
 .sudo_as_admin_successful
 .wget-hsts
 
+# Local tooling/runtime caches
+.cache/
+.codex/
+.config/
+.copilot/
+.docker/
+.dotnet/
+.local/
+.npm/
+.vscode-server/
+
+# Python runtime artifacts
+**/__pycache__/
+*.pyc
+ai-agent/venv/
+ai-agent/state.json
+
+# Local cloned test repositories (do not sync)
+workspaces/
+
+# Large generated audit artifact
+docs/inventory-canonical.tsv
