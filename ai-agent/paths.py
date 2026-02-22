@@ -36,3 +36,20 @@ GITHUB_APP_PEM_FILE = (
     if _pem_raw
     else (AI_AGENT_DIR / "github_app" / "KRT-AI-Agent.pem").resolve()
 )
+
+
+def setup_status() -> dict:
+    """Return whether core setup inputs exist (env IDs + pem file)."""
+    env_vars = {
+        "GITHUB_OWNER": os.getenv("GITHUB_OWNER", "").strip(),
+        "GITHUB_APP_ID": os.getenv("GITHUB_APP_ID", "").strip(),
+        "GITHUB_INSTALLATION_ID": os.getenv("GITHUB_INSTALLATION_ID", "").strip(),
+    }
+    pem_exists = GITHUB_APP_PEM_FILE.exists()
+    return {
+        "has_owner": bool(env_vars["GITHUB_OWNER"]),
+        "has_app_id": bool(env_vars["GITHUB_APP_ID"]),
+        "has_installation_id": bool(env_vars["GITHUB_INSTALLATION_ID"]),
+        "pem_exists": pem_exists,
+        "setup_complete": all(env_vars.values()) and pem_exists,
+    }

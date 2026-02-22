@@ -1,10 +1,11 @@
 import os
 import threading
 import time
+import hashlib
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.observability import (
@@ -19,6 +20,7 @@ import main
 from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
+from paths import ENV_FILE, GITHUB_APP_PEM_FILE, setup_status
 
 SERVICE_POLL_INTERVAL_SECONDS = int(os.getenv("SERVICE_POLL_INTERVAL_SECONDS", str(main.POLL_INTERVAL)))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -258,6 +260,60 @@ def health():
 def metrics():
     return render_prometheus_metrics()
 
+
+@app.get("/setup/status")
+def setup_status_api():
+    return setup_status()
+
+
+def _write_env_entries(entries: dict):
+    existing = {}
+    if os.path.exists(ENV_FILE):
+        with open(ENV_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.strip().split("=", 1)
+                    existing[k] = v
+    existing.update(entries)
+    lines = [f"{k}={v}\n" for k, v in existing.items()]
+    with open(ENV_FILE, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+@app.post("/setup/github")
+def setup_github(
+    owner: str = Form(...),
+    app_id: str = Form(...),
+    installation_id: str = Form(...),
+):
+    owner = owner.strip()
+    app_id = app_id.strip()
+    installation_id = installation_id.strip()
+    if not (owner and app_id and installation_id):
+        raise HTTPException(status_code=400, detail="owner, app_id, installation_id are required")
+    _write_env_entries(
+        {
+            "GITHUB_OWNER": owner,
+            "GITHUB_APP_ID": app_id,
+            "GITHUB_INSTALLATION_ID": installation_id,
+        }
+    )
+    return {"status": "ok", "setup": setup_status()}
+
+
+@app.post("/setup/pem")
+async def setup_pem(pem: UploadFile = File(...)):
+    content = await pem.read()
+    if not content or len(content) > 20000:
+        raise HTTPException(status_code=400, detail="PEM content invalid or too large")
+    if b"BEGIN" not in content or b"PRIVATE KEY" not in content:
+        raise HTTPException(status_code=400, detail="PEM format not recognized")
+    os.makedirs(GITHUB_APP_PEM_FILE.parent, exist_ok=True)
+    with open(GITHUB_APP_PEM_FILE, "wb") as f:
+        f.write(content)
+    os.chmod(GITHUB_APP_PEM_FILE, 0o600)
+    fingerprint = hashlib.sha256(content).hexdigest()
+    return {"status": "ok", "fingerprint": fingerprint, "setup": setup_status()}
 
 @app.get("/metrics/json")
 def metrics_json():

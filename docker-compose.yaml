@@ -18,8 +18,8 @@ services:
       - LLM_REQUIRE_HEALTHY=${LLM_REQUIRE_HEALTHY:-true}
       - OBS_EVENT_LOG_ENABLED=${OBS_EVENT_LOG_ENABLED:-true}
     volumes:
-      - ./ai-agent/.env:/app/ai-agent/.env:ro
-      - ./ai-agent/github_app:/app/ai-agent/github_app:ro
+      - ./ai-agent/.env:/app/ai-agent/.env
+      - ./ai-agent/github_app:/app/ai-agent/github_app
       - ./ai-agent/logs:/app/ai-agent/logs
       - ./ai-agent/state.json:/app/ai-agent/state.json
       - ./workspaces:/app/workspaces
