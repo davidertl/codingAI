@@ -1,7 +1,8 @@
-import os
-import json
-import subprocess
 import hashlib
+import os
+import subprocess
+import time
+
 from llm.strategy_llm import pick_next_strategy
 
 
@@ -11,6 +12,138 @@ def _run(cmd, *, cwd=None):
 
 def _fingerprint(s: str) -> str:
     return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
+def _extract_relevant_error_lines(text: str, max_lines: int = 80, max_chars: int = 4000) -> str:
+    """
+    Extract high-signal error lines and nearby context to keep logs compact for LLM/state/comments.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    lines = raw.splitlines()
+    keywords = (
+        "error",
+        "exception",
+        "traceback",
+        "fatal",
+        "failed",
+        "cannot",
+        "unable",
+        "npm err",
+        "netsdk",
+        "msbuild",
+    )
+
+    idx = set()
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if any(k in low for k in keywords):
+            idx.add(i)
+            if i - 1 >= 0:
+                idx.add(i - 1)
+            if i + 1 < len(lines):
+                idx.add(i + 1)
+
+    if not idx:
+        trimmed = "\n".join(lines[-min(50, len(lines)):])
+        return trimmed[:max_chars]
+
+    selected = [lines[i] for i in sorted(idx)]
+    if len(selected) > max_lines:
+        selected = selected[:max_lines]
+
+    out = "\n".join(selected)
+    if len(out) > max_chars:
+        out = out[:max_chars]
+    return out
+
+
+def _safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _normalize_strategy_memory(strategy_memory: dict | None) -> dict:
+    if not isinstance(strategy_memory, dict):
+        return {}
+
+    normalized = {}
+    for sid, stats in strategy_memory.items():
+        if not isinstance(stats, dict):
+            continue
+        normalized[sid] = {
+            "runs": int(stats.get("runs", 0)),
+            "successes": int(stats.get("successes", 0)),
+            "failures": int(stats.get("failures", 0)),
+            "last_result": str(stats.get("last_result", "")),
+            "last_error_fingerprint": str(stats.get("last_error_fingerprint", "")),
+            "updated_at": int(stats.get("updated_at", 0)),
+        }
+    return normalized
+
+
+def _strategy_memory_score(strategy_id: str, memory: dict) -> float:
+    stats = memory.get(strategy_id, {})
+    runs = int(stats.get("runs", 0))
+    successes = int(stats.get("successes", 0))
+
+    # Laplace-smoothed success rate, slightly favor proven history.
+    success_rate = (successes + 1.0) / (runs + 2.0)
+    experience_bonus = min(runs, 20) * 0.01
+    return success_rate + experience_bonus
+
+
+def _pick_by_memory(remaining: list, memory: dict):
+    with_history = []
+    for i, s in enumerate(remaining):
+        sid = s["id"]
+        runs = int(memory.get(sid, {}).get("runs", 0))
+        if runs <= 0:
+            continue
+        score = _strategy_memory_score(sid, memory)
+        with_history.append((score, -i, sid))
+
+    if not with_history:
+        return None, None
+
+    with_history.sort(reverse=True)
+    best_sid = with_history[0][2]
+    best_score = with_history[0][0]
+
+    idx = next((i for i, s in enumerate(remaining) if s["id"] == best_sid), None)
+    if idx is None:
+        return None, None
+
+    return remaining.pop(idx), best_score
+
+
+def _update_strategy_memory(memory: dict, strategy_id: str, ok: bool, error_text: str):
+    stats = memory.setdefault(
+        strategy_id,
+        {
+            "runs": 0,
+            "successes": 0,
+            "failures": 0,
+            "last_result": "",
+            "last_error_fingerprint": "",
+            "updated_at": 0,
+        },
+    )
+
+    stats["runs"] += 1
+    if ok:
+        stats["successes"] += 1
+        stats["last_result"] = "passed"
+        stats["last_error_fingerprint"] = ""
+    else:
+        stats["failures"] += 1
+        stats["last_result"] = "failed"
+        stats["last_error_fingerprint"] = _fingerprint(error_text)
+    stats["updated_at"] = int(time.time())
 
 
 def analyze_repo(repo_path: str) -> dict:
@@ -108,7 +241,7 @@ def strat_dotnet_build_docker(repo_path: str, repo_analysis: dict):
             "-v", f"{repo_path}:/app",
             "-w", f"/app/{rel}",
             f"mcr.microsoft.com/dotnet/sdk:{sdk}",
-            "dotnet", "build"
+            "dotnet", "build",
         ]
     )
     out = (res.stdout or "") + "\n" + (res.stderr or "")
@@ -134,7 +267,7 @@ def strat_dotnet_build_docker_enable_windows_targeting(repo_path: str, repo_anal
             "-v", f"{repo_path}:/app",
             "-w", f"/app/{rel}",
             f"mcr.microsoft.com/dotnet/sdk:{sdk}",
-            "dotnet", "build", "-p:EnableWindowsTargeting=true"
+            "dotnet", "build", "-p:EnableWindowsTargeting=true",
         ]
     )
     out = (res.stdout or "") + "\n" + (res.stderr or "")
@@ -156,14 +289,20 @@ def strat_node_build_docker(repo_path: str, repo_analysis: dict):
             "-w", f"/app/{rel}",
             "node:20",
             "bash", "-c",
-            "npm ci || npm install; npm run build"
+            "npm ci || npm install; npm run build",
         ]
     )
     out = (res.stdout or "") + "\n" + (res.stderr or "")
     return res.returncode == 0, out.strip()
 
 
-def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
+def run_tests(
+    repo_path: str,
+    repo_name: str,
+    max_attempts: int = 3,
+    strategy_memory: dict | None = None,
+    min_confidence_for_switch: float = 0.65,
+):
     """
     LLM-guided adaptive runner:
     - create candidate strategies from repo analysis
@@ -175,12 +314,15 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
       (success, output, report)
     """
     repo_analysis = analyze_repo(repo_path)
+    memory = _normalize_strategy_memory(strategy_memory)
+
     report = {
         "result": "failed",
         "attempts": [],
         "selected_strategy": None,
         "selected_strategy_confidence": 0.0,
         "selected_strategy_reason": "",
+        "confidence_threshold_used": float(min_confidence_for_switch),
     }
 
     # Build candidate strategy list based on what we actually found
@@ -199,16 +341,23 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
     if not strategies:
         out = "No supported test strategy found (repo scan found no docker/dotnet/node markers)."
         report["final_error_fingerprint"] = _fingerprint(out)
+        report["strategy_memory_update"] = memory
         return False, out, report
 
     attempted = []
     last_error = ""
 
-    # Deterministic first pick: docker compose > dockerfile > dotnet > node (based on list order above)
+    # First pick: memory-biased if historical data exists; otherwise deterministic list order.
     remaining = strategies[:]
-    current = remaining.pop(0)
-    last_selection_reason = "Deterministic first strategy selection."
-    last_selection_confidence = 0.0
+    memory_pick, memory_score = _pick_by_memory(remaining, memory)
+    if memory_pick is not None:
+        current = memory_pick
+        last_selection_reason = f"Memory-biased selection (score={memory_score:.3f})."
+        last_selection_confidence = min(1.0, max(0.0, memory_score))
+    else:
+        current = remaining.pop(0)
+        last_selection_reason = "Deterministic first strategy selection."
+        last_selection_confidence = 0.0
 
     for attempt in range(1, max_attempts + 1):
         attempted.append(current["id"])
@@ -229,12 +378,15 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
 
         print(out)
 
+        relevant_error = _extract_relevant_error_lines(out)
+        _update_strategy_memory(memory, current["id"], ok, relevant_error)
+
         attempt_entry = {
             "attempt": attempt,
             "strategy_id": current["id"],
             "strategy_desc": current["desc"],
             "result": "passed" if ok else "failed",
-            "error_fingerprint": None if ok else _fingerprint(out),
+            "error_fingerprint": None if ok else _fingerprint(relevant_error or out),
         }
         report["attempts"].append(attempt_entry)
 
@@ -243,9 +395,10 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
             report["selected_strategy"] = current["id"]
             report["selected_strategy_confidence"] = last_selection_confidence
             report["selected_strategy_reason"] = last_selection_reason
+            report["strategy_memory_update"] = memory
             return True, out, report
 
-        last_error = out or "Unknown failure."
+        last_error = relevant_error or out or "Unknown failure."
 
         if not remaining:
             break
@@ -257,30 +410,50 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
             last_error=last_error,
             attempted=attempted,
             remaining=remaining,
+            strategy_memory=memory,
         )
 
         chosen_id = decision.get("next_strategy_id")
-        print(f"LLM decision: next={chosen_id} conf={decision.get('confidence')} reason={decision.get('reason')}")
+        llm_confidence = _safe_float(decision.get("confidence", 0.0), default=0.0)
+        llm_reason = str(decision.get("reason", ""))[:500]
+        print(
+            f"LLM decision: next={chosen_id} conf={llm_confidence} "
+            f"retries={decision.get('retry_count', 0)} reason={llm_reason}"
+        )
 
-        # Select chosen or fallback
         idx = next((i for i, s in enumerate(remaining) if s["id"] == chosen_id), None)
-        if idx is None:
-            current = remaining.pop(0)
-            last_selection_reason = "Fallback to first remaining strategy."
-            last_selection_confidence = 0.0
-        else:
+
+        # Confidence threshold gate for switching to LLM-recommended strategy.
+        if idx is not None and llm_confidence >= min_confidence_for_switch:
             current = remaining.pop(idx)
-            last_selection_reason = str(decision.get("reason", ""))[:500]
-            try:
-                last_selection_confidence = float(decision.get("confidence", 0.0))
-            except Exception:
-                last_selection_confidence = 0.0
+            last_selection_reason = f"LLM-selected (conf={llm_confidence:.2f}). {llm_reason}"
+            last_selection_confidence = llm_confidence
+            continue
+
+        memory_pick, memory_score = _pick_by_memory(remaining, memory)
+        if memory_pick is not None:
+            current = memory_pick
+            last_selection_reason = (
+                f"LLM confidence {llm_confidence:.2f} below threshold {min_confidence_for_switch:.2f}; "
+                f"memory-selected (score={memory_score:.3f})."
+            )
+            last_selection_confidence = min(1.0, max(0.0, memory_score))
+            continue
+
+        current = remaining.pop(0)
+        last_selection_reason = (
+            f"LLM confidence {llm_confidence:.2f} below threshold {min_confidence_for_switch:.2f}; "
+            "fallback to first remaining strategy."
+        )
+        last_selection_confidence = 0.0
 
     # Return failure with fingerprint for state tracking
-    failure = f"[fail:{_fingerprint(last_error)}]\n{last_error}"
+    trimmed_error = _extract_relevant_error_lines(last_error) or last_error
+    failure = f"[fail:{_fingerprint(trimmed_error)}]\n{trimmed_error}"
     report["result"] = "failed"
     report["selected_strategy"] = report["attempts"][-1]["strategy_id"] if report["attempts"] else None
     report["selected_strategy_confidence"] = last_selection_confidence
     report["selected_strategy_reason"] = last_selection_reason
-    report["final_error_fingerprint"] = _fingerprint(last_error)
+    report["final_error_fingerprint"] = _fingerprint(trimmed_error)
+    report["strategy_memory_update"] = memory
     return False, failure, report

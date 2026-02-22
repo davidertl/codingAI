@@ -35,6 +35,7 @@ FAIL_COOLDOWN_SECONDS = 6 * 60 * 60  # 6h
 MAX_PATCH_OPS = 20
 REPORT_MARKER = "<!-- codingai-test-report -->"
 AI_STOP_PHRASE = "AI Stop"
+STRATEGY_SWITCH_CONFIDENCE_THRESHOLD = float(os.getenv("STRATEGY_SWITCH_CONFIDENCE_THRESHOLD", "0.65"))
 
 
 def load_state():
@@ -93,6 +94,13 @@ def _register_failure(state, repo, number, summary, details):
         "retry_after": int(time.time()) + FAIL_COOLDOWN_SECONDS,
     }
     save_state(state)
+
+
+def _apply_strategy_memory_update(state, repo, test_report):
+    memory_update = test_report.get("strategy_memory_update")
+    if not isinstance(memory_update, dict):
+        return
+    state.setdefault("strategy_memory", {})[repo] = memory_update
 
 
 def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id):
@@ -262,6 +270,7 @@ def process_issue(repo, issue, state):
         default_branch = get_default_branch(repo)
         branch_sha = get_branch_sha(repo, branch)
         base_sha = branch_sha or get_branch_sha(repo, default_branch)
+        repo_strategy_memory = state.get("strategy_memory", {}).get(repo, {})
 
         if not base_sha:
             raise RuntimeError("Could not resolve base SHA for patch pipeline.")
@@ -303,7 +312,14 @@ def process_issue(repo, issue, state):
             return
 
         print("Patch applied locally. Running tests on patched repository...")
-        success, output, test_report = run_tests(repo_path, repo_name=repo, max_attempts=3)
+        success, output, test_report = run_tests(
+            repo_path,
+            repo_name=repo,
+            max_attempts=3,
+            strategy_memory=repo_strategy_memory,
+            min_confidence_for_switch=STRATEGY_SWITCH_CONFIDENCE_THRESHOLD,
+        )
+        _apply_strategy_memory_update(state, repo, test_report)
 
         if not success:
             _register_failure(
@@ -368,6 +384,7 @@ def process_issue(repo, issue, state):
             "last_status": "passed",
             "patch_ops_count": len(patch_ops),
             "patch_confidence": patch_result.get("confidence", 0.0),
+            "strategy_confidence_threshold": STRATEGY_SWITCH_CONFIDENCE_THRESHOLD,
             "pr_number": pr_info["number"],
             "pr_url": pr_info["url"],
             "report_comment_id": comment_result.get("id"),
