@@ -212,6 +212,18 @@
       font-size: 0.81rem;
     }
 
+    pre {
+      background: rgba(9, 21, 26, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      overflow-x: auto;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      color: var(--muted);
+      max-height: 280px;
+    }
+
     th, td {
       text-align: left;
       border-bottom: 1px solid rgba(126, 181, 178, 0.2);
@@ -621,6 +633,11 @@
         const statusCls = statusClass(status);
         const ciGate = item.ci_gate || {};
         const ciDecision = ciGate.decision || {};
+        const pipeline = item.pipeline || {};
+        const stage = pipeline.stage || "n/a";
+        const pauseDeadline = pipeline.pause_deadline ? new Date(pipeline.pause_deadline * 1000).toISOString() : "-";
+        const diffPreview = pipeline.diff ? pipeline.diff.slice(0, 400) : "";
+        const testPreview = pipeline.test_output_excerpt ? pipeline.test_output_excerpt.slice(0, 400) : "";
         const links = [
           item.pr_url ? `<a href="${item.pr_url}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
           item.check_run_url ? `<a href="${item.check_run_url}" target="_blank" rel="noreferrer">check run</a>` : "",
@@ -640,12 +657,22 @@
               <span class="${statusCls}">${status}</span>
             </div>
             <div class="mono">branch: ${item.active_branch || "-"}</div>
+            <div class="mono">stage: ${stage}</div>
             <div class="mono">patch_ops=${item.patch_ops_count ?? "-"} patch_conf=${item.patch_confidence ?? "-"}</div>
             <div class="mono">${testPatch}</div>
             <div class="mono">${strategyCfg}</div>
             <div class="mono">last_duration=${lastDuration} ${ciText}</div>
             <div class="mono">retry_after=${retry}</div>
             <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>
+            <div class="row">
+              <button data-action="diff" data-issue="${item.issue_number}">View diff</button>
+              <button data-action="pause" data-issue="${item.issue_number}">Pause</button>
+              <button data-action="resume" data-issue="${item.issue_number}">Resume</button>
+              <button data-action="cancel" data-issue="${item.issue_number}">Cancel</button>
+              <span class="chip mono">pause until: ${pauseDeadline}</span>
+            </div>
+            <pre class="mono" data-diff="${item.issue_number}">${diffPreview || "diff not recorded"}</pre>
+            <pre class="mono" data-log="${item.issue_number}">${testPreview || "no test output captured"}</pre>
             ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${item.ai_stop_reason || "reason n/a"})</div>` : ""}
             ${item.pending_manual_approval ? `<div class="chip warn">pending manual approval</div>` : ""}
             ${err}
@@ -736,6 +763,28 @@
     });
 
     el.btnRefresh.addEventListener("click", refreshAll);
+
+    el.trackedWrap.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const issue = btn.dataset.issue;
+      const action = btn.dataset.action;
+      if (!issue || !action || !state.selectedRepo) return;
+      try {
+        if (action === "diff") {
+          const res = await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/diff`);
+          const pre = document.querySelector(`pre[data-diff="${issue}"]`);
+          if (pre) pre.textContent = res.diff || "no diff";
+          showToast("diff loaded");
+          return;
+        }
+        await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/${action}`, { method: "POST" });
+        showToast(`${action} sent for #${issue}`);
+        await refreshSummary();
+      } catch (e) {
+        showToast(`pipeline action failed: ${e.message}`, true);
+      }
+    });
 
     el.setupGithubForm.addEventListener("submit", async (ev) => {
       ev.preventDefault();

@@ -1,5 +1,5 @@
 # Operations Runbook
-Version: 1.2.0
+Version: 1.3.0
 
 ## Prerequisites
 
@@ -38,6 +38,15 @@ It will:
 - Ensure `ai-agent/github_app/` exists and the private key inside has `chmod 600`; directory can be `chmod 700`.
 - Compose already mounts both locations read-write so the UI `/setup/*` endpoints can write them; if you override paths with env vars, update `docker-compose.yaml` accordingly.
 - Never paste the PEM contents into logs; use the UI upload or copy the file onto disk with correct permissions.
+
+## Pipeline pause/diff controls (Phase 16)
+
+- API endpoints:
+  - `GET /pipeline/{repo}/{issue}` → current pipeline state
+  - `GET /pipeline/{repo}/{issue}/diff` → last captured diff (truncated)
+  - `POST /pipeline/{repo}/{issue}/pause|resume|cancel` → control pause window
+- Default pause window before tests: 10 seconds (`CODINGAI_PAUSE_WINDOW_SECONDS`), max pause cap 300 seconds (`CODINGAI_MAX_PAUSE_SECONDS`).
+- Dashboard tracked-issues cards expose buttons for diff/pause/resume/cancel.
 
 ## Revalidation checklist
 

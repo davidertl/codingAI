@@ -213,6 +213,7 @@ def _repo_state_summary(repo: str) -> list[dict]:
                 "last_duration_ms": value.get("last_duration_ms"),
                 "last_processed_at": value.get("last_processed_at"),
                 "ci_gate": value.get("ci_gate"),
+                "pipeline": value.get("pipeline", {}),
             }
         )
     out.sort(key=lambda x: x["issue_number"])
@@ -361,6 +362,88 @@ def enable_project(repo: str):
 @app.post("/projects/{repo}/disable")
 def disable_project(repo: str):
     return _set_project_enabled(repo, False)
+
+
+def _get_issue_state_or_404(repo: str, issue_number: int):
+    state = main.load_state()
+    repo_state = state.get(repo, {})
+    issue_state = repo_state.get(str(issue_number))
+    if not issue_state:
+        raise HTTPException(status_code=404, detail=f"No state recorded for issue {issue_number} in {repo}")
+    return state, issue_state
+
+
+@app.get("/pipeline/{repo}/{issue_number}")
+def pipeline(repo: str, issue_number: int):
+    _require_repo(repo)
+    state, issue_state = _get_issue_state_or_404(repo, issue_number)
+    pipeline = issue_state.get("pipeline") or {}
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline state not available")
+    return {
+        "repo": repo,
+        "issue": issue_number,
+        "pipeline": pipeline,
+        "time_utc": _utc_now_iso(),
+    }
+
+
+@app.get("/pipeline/{repo}/{issue_number}/diff")
+def pipeline_diff(repo: str, issue_number: int):
+    _require_repo(repo)
+    _state, issue_state = _get_issue_state_or_404(repo, issue_number)
+    pipeline = issue_state.get("pipeline") or {}
+    diff = pipeline.get("diff", "")
+    return {
+        "repo": repo,
+        "issue": issue_number,
+        "diff": diff,
+        "length": len(diff),
+        "time_utc": _utc_now_iso(),
+    }
+
+
+def _pipeline_control(repo: str, issue_number: int, *, action: str, reason: str | None = None):
+    state, issue_state = _get_issue_state_or_404(repo, issue_number)
+    pipeline = issue_state.setdefault("pipeline", {})
+    now = int(time.time())
+    if action == "pause":
+        pipeline["pause_requested"] = True
+        pipeline["paused"] = True
+        pipeline["paused_at"] = now
+        pipeline.setdefault("pause_deadline", now + main.PAUSE_WINDOW_SECONDS)
+    elif action == "resume":
+        pipeline["pause_requested"] = False
+        pipeline["paused"] = False
+        pipeline["pause_deadline"] = now + 3
+    elif action == "cancel":
+        pipeline["cancel_requested"] = True
+        if reason:
+            pipeline["cancel_reason"] = reason[:200]
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action {action}")
+    pipeline["updated_at"] = now
+    main.save_state(state)
+    return {"status": "ok", "pipeline": pipeline, "time_utc": _utc_now_iso()}
+
+
+@app.post("/pipeline/{repo}/{issue_number}/pause")
+def pipeline_pause(repo: str, issue_number: int):
+    _require_repo(repo)
+    return _pipeline_control(repo, issue_number, action="pause")
+
+
+@app.post("/pipeline/{repo}/{issue_number}/resume")
+def pipeline_resume(repo: str, issue_number: int):
+    _require_repo(repo)
+    return _pipeline_control(repo, issue_number, action="resume")
+
+
+@app.post("/pipeline/{repo}/{issue_number}/cancel")
+def pipeline_cancel(repo: str, issue_number: int, reason: str | None = None):
+    _require_repo(repo)
+    return _pipeline_control(repo, issue_number, action="cancel", reason=reason)
+
 
 @app.get("/metrics/json")
 def metrics_json():

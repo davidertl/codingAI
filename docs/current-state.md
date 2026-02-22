@@ -1,9 +1,9 @@
 # Current State
-Version: 1.3.0
+Version: 1.4.0
 
 This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
 
-## Phase status (1-14)
+## Phase status (1-16)
 
 1. `Phase 1 - Real patch generation`: Implemented  
    - LLM patch ops (`llm/patch_llm.py`)  
@@ -52,6 +52,11 @@ This reflects the verified code/runtime state for `ai-agent/` on branch `localst
    - GitHub installation repo listing (`github/repo_manager.py::list_installation_repos`)  
    - Enable/disable per repo persisted in state (`/projects`, `/projects/{repo}/enable|disable`)  
    - UI surfaced in dashboard left column (Projects + Setup cards)
+15. `Phase 15 - Chat + Repo UX`: Pending (plan complete, implementation not started; see roadmap)
+16. `Phase 16 - Issue → Patch → Diff → Pause → Test → PR`: Implemented  
+   - Pipeline stages persisted per issue (`pipeline.stage`, `diff`, `pause_deadline`)  
+   - 10s pause window with user pause/resume/cancel via API (`/pipeline/*`) before tests run  
+   - Diff capture for patch ops and test output excerpts stored for UI; UI buttons for diff/pause/resume/cancel in tracked issues.
 
 ## Revalidation evidence (2026-02-22 UTC)
 

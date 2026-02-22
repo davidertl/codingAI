@@ -1,5 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.1
+Version: 1.3.2
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
@@ -27,6 +27,8 @@ Version: 1.3.1
 - Job state: queued → analyzing → patching → diff_ready → pause_window (10s) → testing → passed → pushing → pr_created | failed_no_push | needs_user_input | canceled.
 - Diff viewer + pause/cancel controls; logs/test output visible.
 - Failures keep local worktree/branch (unpushed); actions: retry, delete, promote. Pass: commit/push side branch + PR.
+
+Status: Implemented (pipeline stages persisted, pause/pause controls via `/pipeline/*`, diff capture in UI tracked issues).
 
 ## Phase 15 – Chat + Repo UX
 - Chats/messages in DB; repo-scoped threads; SSE streaming.

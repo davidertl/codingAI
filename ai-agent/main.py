@@ -45,6 +45,9 @@ POLL_INTERVAL = 300
 REPORT_MARKER = "<!-- codingai-test-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+PAUSE_WINDOW_SECONDS = int(os.getenv("CODINGAI_PAUSE_WINDOW_SECONDS", "10") or "10")
+MAX_PAUSE_SECONDS = int(os.getenv("CODINGAI_MAX_PAUSE_SECONDS", "300") or "300")
+
 load_dotenv(str(ENV_FILE))
 
 
@@ -96,6 +99,91 @@ def should_skip_due_to_cooldown(state, repo, issue_number):
 
 def _get_issue_state(state, repo, number):
     return state.setdefault(repo, {}).setdefault(str(number), {})
+
+
+def _pipeline_state(issue_state: dict) -> dict:
+    return issue_state.setdefault("pipeline", {})
+
+
+def _set_pipeline_stage(state, repo, number, stage: str, **extras):
+    issue_state = _get_issue_state(state, repo, number)
+    pipeline = _pipeline_state(issue_state)
+    pipeline["stage"] = stage
+    pipeline["updated_at"] = int(time.time())
+    for k, v in extras.items():
+        pipeline[k] = v
+    save_state(state)
+    return pipeline
+
+
+def _capture_diff(repo_path: str, max_chars: int = 20000):
+    try:
+        r = subprocess.run(
+            ["git", "diff"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        diff = r.stdout or ""
+    except Exception as e:
+        diff = f"diff capture failed: {e}"
+    return diff[:max_chars], len(diff)
+
+
+def _await_pause_window(repo: str, issue_number: str, *, initial_deadline: float):
+    """
+    Wait for pause window with optional user pause/cancel controls.
+    Respects MAX_PAUSE_SECONDS cap for user pauses.
+    """
+    start_ts = time.time()
+    while True:
+        now = time.time()
+        state_live = load_state()
+        issue_state_live = state_live.get(repo, {}).get(str(issue_number), {})
+        pipeline = issue_state_live.get("pipeline", {}) if isinstance(issue_state_live, dict) else {}
+
+        if pipeline.get("cancel_requested"):
+            _set_pipeline_stage(
+                state_live,
+                repo,
+                issue_number,
+                "canceled",
+                canceled_at=int(now),
+                cancel_reason=pipeline.get("cancel_reason", "user_cancel"),
+            )
+            raise RuntimeError("Pipeline canceled by user")
+
+        deadline = float(pipeline.get("pause_deadline", initial_deadline))
+        paused = bool(pipeline.get("paused", False))
+        paused_at = float(pipeline.get("paused_at", now))
+
+        if paused:
+            if now - paused_at > MAX_PAUSE_SECONDS:
+                # auto-resume after max pause window
+                pipeline["paused"] = False
+                pipeline["pause_requested"] = False
+                pipeline["pause_deadline"] = int(now + 2)
+                pipeline["updated_at"] = int(now)
+                save_state(state_live)
+            else:
+                time.sleep(1.0)
+                continue
+
+        if now >= deadline:
+            break
+
+        time.sleep(0.5)
+
+    elapsed = time.time() - start_ts
+    record_event(
+        "pause_window_complete",
+        repo=repo,
+        issue_number=issue_number,
+        status="continued",
+        duration_ms=int(elapsed * 1000),
+        data={"deadline": int(initial_deadline)},
+    )
 
 
 def _elapsed_ms(started_at):
@@ -211,6 +299,13 @@ def _register_failure(state, repo, number, summary, details, *, policy, started_
     issue_state["dry_run"] = dry_run
     issue_state["ai_stop_phrase"] = ai_stop_phrase
     issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
+
+    pipeline = issue_state.get("pipeline")
+    if isinstance(pipeline, dict):
+        pipeline["stage"] = pipeline.get("stage", "failed_no_push")
+        pipeline["last_error"] = details[:500]
+        pipeline["updated_at"] = int(time.time())
+
     save_state(state)
 
     _record_issue_outcome(
@@ -591,6 +686,7 @@ def process_issue(repo, issue, state, policy=None):
     number = str(issue["number"])
     issue_started = time.time()
     issue_state = _get_issue_state(state, repo, number)
+    job_id = f"{int(issue_started)}-{issue_state.get('branch_iteration', 0)}"
     pr_policy = policy.get("pr", {})
     patch_policy = policy.get("patch", {})
     strategy_policy = policy.get("strategy", {})
@@ -619,6 +715,14 @@ def process_issue(repo, issue, state, policy=None):
         issue_number=number,
         status="started",
         data={"dry_run": dry_run},
+    )
+    _set_pipeline_stage(
+        state,
+        repo,
+        number,
+        "queued",
+        job_id=job_id,
+        started_at=int(issue_started),
     )
 
     # resolve active/open PR branch first (iteration naming strategy)
@@ -657,6 +761,7 @@ def process_issue(repo, issue, state, policy=None):
 
     if not _has_manual_approval(issue, policy):
         issue_state["pending_manual_approval"] = True
+        _set_pipeline_stage(state, repo, number, "needs_user_input", reason="manual_approval_required")
         _record_issue_outcome(
             state,
             repo,
@@ -845,6 +950,7 @@ def process_issue(repo, issue, state, policy=None):
             return
 
     print(f"\nProcessing issue #{number} on branch {branch}")
+    _set_pipeline_stage(state, repo, number, "analyzing", active_branch=branch)
 
     repo_path = clone_or_update(repo)
 
@@ -861,6 +967,7 @@ def process_issue(repo, issue, state, policy=None):
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
         repo_analysis = analyze_repo(repo_path)
+        _set_pipeline_stage(state, repo, number, "patching", active_branch=branch)
         patch_started = time.time()
         patch_result = propose_patch_ops(
             repo_path=repo_path,
@@ -924,6 +1031,35 @@ def process_issue(repo, issue, state, policy=None):
             )
             return
 
+        diff_text, diff_len = _capture_diff(repo_path)
+        pause_deadline = time.time() + PAUSE_WINDOW_SECONDS
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "pause_window",
+            diff=diff_text,
+            diff_length=diff_len,
+            pause_deadline=int(pause_deadline),
+            paused=False,
+            pause_requested=False,
+            cancel_requested=False,
+        )
+        try:
+            _await_pause_window(repo, number, initial_deadline=pause_deadline)
+        except RuntimeError as cancel_err:
+            _register_failure(
+                state,
+                repo,
+                number,
+                f"Pipeline canceled for issue #{number}.",
+                str(cancel_err),
+                policy=policy,
+                started_at=issue_started,
+            )
+            return
+
+        _set_pipeline_stage(state, repo, number, "testing")
         print("Patch applied locally. Running tests on patched repository...")
         confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
         strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
@@ -1097,6 +1233,14 @@ def process_issue(repo, issue, state, policy=None):
                 started_at=issue_started,
             )
             return
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "passed",
+            test_output_excerpt=str(output or "")[:2000],
+            attempts=attempts_count,
+        )
 
         if dry_run:
             issue_state["active_branch"] = branch
@@ -1118,6 +1262,13 @@ def process_issue(repo, issue, state, policy=None):
                 "would_publish_check_run": bool(pr_policy.get("enable_github_checks", True)),
                 "would_upsert_pr_comment": True,
             }
+            _set_pipeline_stage(
+                state,
+                repo,
+                number,
+                "failed_no_push" if not success else "passed",
+                dry_run=True,
+            )
             _record_issue_outcome(
                 state,
                 repo,
@@ -1131,6 +1282,7 @@ def process_issue(repo, issue, state, policy=None):
             return
 
         print("Patched tests passed. Creating commit via GitHub API...")
+        _set_pipeline_stage(state, repo, number, "pushing")
 
         # Create branch remotely only after patch and tests passed.
         if not branch_sha:
@@ -1228,6 +1380,15 @@ def process_issue(repo, issue, state, policy=None):
         issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
         issue_state["retry_after"] = 0
         issue_state["dry_run"] = False
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "pr_created",
+            pr_number=pr_info["number"],
+            pr_url=pr_info["url"],
+            check_run_url=check_run_url,
+        )
         _record_issue_outcome(
             state,
             repo,
