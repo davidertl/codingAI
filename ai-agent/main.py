@@ -28,7 +28,7 @@ from github.pr_manager import (
     has_ai_stop_comment,
     upsert_pr_comment,
 )
-from github.repo_manager import clone_or_update
+from github.repo_manager import clone_or_update, prepare_job_worktree, cleanup_jobs
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
 from paths import ENV_FILE, STATE_FILE
@@ -952,8 +952,6 @@ def process_issue(repo, issue, state, policy=None):
     print(f"\nProcessing issue #{number} on branch {branch}")
     _set_pipeline_stage(state, repo, number, "analyzing", active_branch=branch)
 
-    repo_path = clone_or_update(repo)
-
     try:
         default_branch = get_default_branch(repo)
         branch_sha = get_branch_sha(repo, branch)
@@ -962,6 +960,8 @@ def process_issue(repo, issue, state, policy=None):
 
         if not base_sha:
             raise RuntimeError("Could not resolve base SHA for patch pipeline.")
+
+        repo_path = prepare_job_worktree(repo, job_id=job_id, base_sha=base_sha)
 
         # Ensure local tests run against the exact commit parent we will use for API commit.
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
@@ -1487,6 +1487,7 @@ def _run_repo_cycle(repo):
         duration_ms=cycle_duration_ms,
         data={"issues_count": issues_count},
     )
+    cleanup_jobs()
 
 
 def run_repo_cycle_once(repo):

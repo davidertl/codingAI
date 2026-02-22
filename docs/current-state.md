@@ -1,9 +1,9 @@
 # Current State
-Version: 1.4.0
+Version: 1.5.0
 
 This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
 
-## Phase status (1-16)
+## Phase status (1-17)
 
 1. `Phase 1 - Real patch generation`: Implemented  
    - LLM patch ops (`llm/patch_llm.py`)  
@@ -57,6 +57,10 @@ This reflects the verified code/runtime state for `ai-agent/` on branch `localst
    - Pipeline stages persisted per issue (`pipeline.stage`, `diff`, `pause_deadline`)  
    - 10s pause window with user pause/resume/cancel via API (`/pipeline/*`) before tests run  
    - Diff capture for patch ops and test output excerpts stored for UI; UI buttons for diff/pause/resume/cancel in tracked issues.
+17. `Phase 17 - Containerized execution / job worktrees`: Implemented  
+   - Shared repo mirrors under `workspaces/repos/`; per-job worktrees under `workspaces/jobs/{repo}/{job_id}` via `prepare_job_worktree`  
+   - Base SHA fetched from GitHub, worktree created at that commit before patch/test  
+   - TTL cleanup of old job dirs (`CODINGAI_JOB_TTL_SECONDS`, default 24h; max jobs per repo 12)
 
 ## Revalidation evidence (2026-02-22 UTC)
 

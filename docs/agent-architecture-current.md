@@ -1,5 +1,5 @@
 # Agent Architecture (Current)
-Version: 1.3.0
+Version: 1.4.0
 
 ## Core pipeline (current)
 
@@ -26,7 +26,7 @@ Version: 1.3.0
 - `github/pr_manager.py`: PR create/reuse, AI Stop detection, comment upsert.
 - `github/checks_manager.py`: GitHub Checks API publish.
 - `github/ci_status.py`: combined status + check-runs for CI gate.
-- `github/repo_manager.py`: clone/update workspaces with docker-safe guard; lists installation repos for projects UI.
+- `github/repo_manager.py`: shared mirrors under `workspaces/repos`, per-job worktrees under `workspaces/jobs/{repo}/{job_id}`, TTL cleanup; lists installation repos for projects UI.
 - `service/api.py`: FastAPI control plane, workers, metrics/events/CI endpoints, setup endpoints (`/setup/status`, `/setup/github`, `/setup/pem`), projects enable/disable (`/projects*`), pipeline controls (`/pipeline/{repo}/{issue}/pause|resume|cancel|diff`), serves dashboard (`service/static/index.html`).
 - `service/static/index.html`: Dashboard wiring for setup status/PEM upload, installation repo list with enable/disable, worker controls, queue/tracked issue views, pipeline diff/pause/resume/cancel buttons per tracked issue.
 - `docker-compose.yaml`: binds `.env` and `github_app/` into the service container read-write to support setup UI writes.

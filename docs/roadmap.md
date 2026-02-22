@@ -1,5 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.2
+Version: 1.3.3
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
@@ -22,6 +22,8 @@ Version: 1.3.2
 - Layout: `repos/` mirrors, `jobs/<id>/` worktrees with TTL cleanup.
 - Docker via host socket (trusted single-user); optional cgroup caps/rootless.
 - Test runner keeps existing strategies; optional deploy+smoke step; DAU/pentest flag off by default.
+
+Status: Implemented (mirrors + per-job worktrees + TTL cleanup; strategies already use docker compose/dotnet/node containers).
 
 ## Phase 16 – Issue → Patch → Diff → Pause → Test → PR
 - Job state: queued → analyzing → patching → diff_ready → pause_window (10s) → testing → passed → pushing → pr_created | failed_no_push | needs_user_input | canceled.

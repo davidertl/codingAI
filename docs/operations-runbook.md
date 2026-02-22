@@ -1,5 +1,5 @@
 # Operations Runbook
-Version: 1.3.0
+Version: 1.4.0
 
 ## Prerequisites
 
@@ -47,6 +47,12 @@ It will:
   - `POST /pipeline/{repo}/{issue}/pause|resume|cancel` → control pause window
 - Default pause window before tests: 10 seconds (`CODINGAI_PAUSE_WINDOW_SECONDS`), max pause cap 300 seconds (`CODINGAI_MAX_PAUSE_SECONDS`).
 - Dashboard tracked-issues cards expose buttons for diff/pause/resume/cancel.
+
+## Job worktrees & cleanup (Phase 17)
+
+- Mirrors live under `workspaces/repos/{repo}`; job-specific worktrees under `workspaces/jobs/{repo}/{job_id}`.
+- TTL cleanup runs after each repo cycle: default 24h (`CODINGAI_JOB_TTL_SECONDS`), keeps at most 12 jobs per repo (`CODINGAI_JOB_MAX_PER_REPO`).
+- Job worktrees are created at the exact base SHA from GitHub before patch/test; git worktree add is used instead of in-place cloning.
 
 ## Revalidation checklist
 
