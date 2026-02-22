@@ -25,6 +25,7 @@ This folder contains the Phase 0 analysis deliverables for the local AI coding a
 - `local-llm-setup.md`: local LLM provider mode and Ollama bootstrap runbook.
 - `phase7plus-roadmap.md`: phased implementation plan for remaining work (API, Web UI, governance, observability).
 - `phase8-api-control-plane.md`: FastAPI control plane endpoints and worker model.
+- `phase9-web-ui-mvp.md`: web dashboard usage and API backing endpoints.
 
 ## Notes
 

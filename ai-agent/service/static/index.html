@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodingAI Control Plane</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap");
+
+    :root {
+      --bg-0: #0a1215;
+      --bg-1: #0f1e24;
+      --bg-2: #152a31;
+      --surface: rgba(18, 33, 38, 0.72);
+      --surface-strong: rgba(24, 42, 49, 0.92);
+      --line: rgba(126, 181, 178, 0.26);
+      --text: #e8f4f2;
+      --muted: #a6c3bf;
+      --ok: #26d58b;
+      --warn: #f0bd4f;
+      --bad: #ef6d6d;
+      --accent: #52c7d1;
+      --accent-2: #8de0b6;
+      --shadow: 0 14px 44px rgba(3, 10, 14, 0.4);
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(900px 540px at 8% -10%, rgba(83, 168, 170, 0.24), transparent 60%),
+        radial-gradient(780px 430px at 95% 10%, rgba(84, 126, 185, 0.24), transparent 58%),
+        linear-gradient(145deg, var(--bg-0), var(--bg-1) 44%, var(--bg-2));
+      font-family: "Sora", sans-serif;
+      line-height: 1.35;
+      letter-spacing: 0.01em;
+    }
+
+    .grid {
+      min-height: 100%;
+      display: grid;
+      grid-template-columns: 330px 1fr;
+      gap: 18px;
+      padding: 18px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(5px);
+      overflow: hidden;
+      animation: enter .38s ease both;
+    }
+
+    .panel .hd {
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(160deg, rgba(62, 113, 126, 0.2), rgba(18, 33, 38, 0));
+    }
+
+    .title {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .stack { padding: 14px; display: grid; gap: 12px; }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .kpi {
+      background: var(--surface-strong);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    .kpi .k { color: var(--muted); font-size: 0.75rem; }
+    .kpi .v { margin-top: 6px; font-size: 0.95rem; font-weight: 700; }
+
+    .repo {
+      border: 1px solid var(--line);
+      background: var(--surface-strong);
+      border-radius: 14px;
+      padding: 11px;
+      display: grid;
+      gap: 10px;
+      transition: transform .15s ease, border-color .2s ease;
+    }
+
+    .repo.active {
+      border-color: rgba(93, 208, 216, 0.7);
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px rgba(110, 214, 220, 0.16) inset;
+    }
+
+    .repo .name {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .chip {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.68rem;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 2px 8px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .chip.ok { color: var(--ok); border-color: rgba(38, 213, 139, 0.5); }
+    .chip.bad { color: var(--bad); border-color: rgba(239, 109, 109, 0.55); }
+    .chip.warn { color: var(--warn); border-color: rgba(240, 189, 79, 0.58); }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: rgba(17, 38, 44, 0.9);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 0.79rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: border-color .2s ease, transform .12s ease, background .2s ease;
+    }
+
+    button:hover { border-color: rgba(103, 204, 210, 0.8); transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.primary {
+      background: linear-gradient(150deg, rgba(64, 147, 166, 0.4), rgba(84, 199, 153, 0.36));
+      border-color: rgba(100, 204, 180, 0.7);
+    }
+
+    .content {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 16px;
+      padding: 16px;
+    }
+
+    .box {
+      border: 1px solid var(--line);
+      background: var(--surface-strong);
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .box .hd2 {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.81rem;
+    }
+
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid rgba(126, 181, 178, 0.2);
+      padding: 7px 6px;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+
+    a { color: var(--accent-2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .issues {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+      gap: 10px;
+    }
+
+    .issue {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(18, 33, 38, 0.74);
+      display: grid;
+      gap: 7px;
+    }
+
+    .issue .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .issue .num {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .status {
+      font-size: 0.73rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      max-width: max-content;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+    }
+
+    .status.passed { color: var(--ok); border-color: rgba(38, 213, 139, 0.5); }
+    .status.failed { color: var(--bad); border-color: rgba(239, 109, 109, 0.55); }
+    .status.pending { color: var(--warn); border-color: rgba(240, 189, 79, 0.6); }
+
+    .msg {
+      border: 1px dashed rgba(126, 181, 178, 0.35);
+      border-radius: 12px;
+      padding: 10px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 14px;
+      right: 14px;
+      border: 1px solid var(--line);
+      background: rgba(10, 25, 32, 0.95);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 0.8rem;
+      max-width: 420px;
+      z-index: 99;
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity .2s ease, transform .2s ease;
+      pointer-events: none;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 1080px) {
+      .grid { grid-template-columns: 1fr; }
+      .content { padding: 12px; }
+    }
+
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <main class="grid">
+    <section class="panel">
+      <div class="hd">
+        <h1 class="title">CodingAI Dashboard</h1>
+        <div class="subtitle">Phase 9 MVP: queue, runtime status, controls, PR/test visibility</div>
+        <div class="kpis">
+          <div class="kpi">
+            <div class="k">LLM</div>
+            <div class="v" id="llmStatus">-</div>
+          </div>
+          <div class="kpi">
+            <div class="k">Workers</div>
+            <div class="v" id="workersCount">0</div>
+          </div>
+          <div class="kpi">
+            <div class="k">Provider</div>
+            <div class="v" id="providerName">-</div>
+          </div>
+          <div class="kpi">
+            <div class="k">Server Time</div>
+            <div class="v mono" id="serverTime">-</div>
+          </div>
+        </div>
+      </div>
+      <div class="stack" id="repoList"></div>
+    </section>
+
+    <section class="panel">
+      <div class="content">
+        <section class="box">
+          <div class="hd2">
+            <strong id="selectedRepoTitle">Repository</strong>
+            <div class="row">
+              <button class="primary" id="btnRunOnce">Run Once</button>
+              <button id="btnStartWorker">Start Worker</button>
+              <button id="btnStopWorker">Stop Worker</button>
+              <button id="btnRefresh">Refresh</button>
+            </div>
+          </div>
+          <div class="row mono">
+            <span id="workerMeta">Worker: -</span>
+            <span id="queueMeta">Queue: -</span>
+          </div>
+        </section>
+
+        <section class="box">
+          <div class="hd2">
+            <strong>Open AI-Fix Queue</strong>
+            <span class="mono" id="queueError"></span>
+          </div>
+          <div id="queueWrap"></div>
+        </section>
+
+        <section class="box">
+          <div class="hd2">
+            <strong>Tracked Issues / PR / Test Signals</strong>
+            <span class="mono" id="trackedMeta"></span>
+          </div>
+          <div id="trackedWrap"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const state = {
+      repos: [],
+      selectedRepo: null,
+      health: null,
+      summary: null,
+      refreshTimer: null,
+    };
+
+    const el = {
+      repoList: document.getElementById("repoList"),
+      llmStatus: document.getElementById("llmStatus"),
+      workersCount: document.getElementById("workersCount"),
+      providerName: document.getElementById("providerName"),
+      serverTime: document.getElementById("serverTime"),
+      selectedRepoTitle: document.getElementById("selectedRepoTitle"),
+      workerMeta: document.getElementById("workerMeta"),
+      queueMeta: document.getElementById("queueMeta"),
+      queueError: document.getElementById("queueError"),
+      queueWrap: document.getElementById("queueWrap"),
+      trackedMeta: document.getElementById("trackedMeta"),
+      trackedWrap: document.getElementById("trackedWrap"),
+      btnRunOnce: document.getElementById("btnRunOnce"),
+      btnStartWorker: document.getElementById("btnStartWorker"),
+      btnStopWorker: document.getElementById("btnStopWorker"),
+      btnRefresh: document.getElementById("btnRefresh"),
+      toast: document.getElementById("toast"),
+    };
+
+    async function fetchJson(path, opts = {}) {
+      const res = await fetch(path, opts);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${res.status} ${res.statusText}: ${text.slice(0, 260)}`);
+      }
+      return res.json();
+    }
+
+    function showToast(message, isError = false) {
+      el.toast.textContent = message;
+      el.toast.style.borderColor = isError ? "rgba(239,109,109,0.65)" : "rgba(126,181,178,0.42)";
+      el.toast.classList.add("show");
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
+    }
+
+    function statusClass(status) {
+      const s = String(status || "").toLowerCase();
+      if (s.includes("pass")) return "status passed";
+      if (s.includes("fail")) return "status failed";
+      return "status pending";
+    }
+
+    function renderRepos() {
+      const rows = state.repos.map((item) => {
+        const active = item.repo === state.selectedRepo ? "repo active" : "repo";
+        const running = item.running ? "chip ok" : "chip";
+        return `
+          <article class="${active}" data-repo="${item.repo}">
+            <div class="name">
+              <span>${item.repo}</span>
+              <span class="${running}">${item.running ? "worker:on" : "worker:off"}</span>
+            </div>
+            <div class="row">
+              <button data-action="select" data-repo="${item.repo}">Select</button>
+              <button data-action="start" data-repo="${item.repo}">Start</button>
+              <button data-action="stop" data-repo="${item.repo}">Stop</button>
+            </div>
+          </article>
+        `;
+      }).join("");
+      el.repoList.innerHTML = rows || `<div class="msg">No repositories configured.</div>`;
+    }
+
+    function renderHeader() {
+      const h = state.health || {};
+      el.llmStatus.textContent = h.llm_ready ? "READY" : "NOT READY";
+      el.llmStatus.style.color = h.llm_ready ? "var(--ok)" : "var(--bad)";
+      el.providerName.textContent = h.llm_active_provider || "-";
+      el.serverTime.textContent = h.time_utc || "-";
+      el.workersCount.textContent = String(h.workers_running ?? 0);
+    }
+
+    function renderQueue(summary) {
+      const q = summary?.queue || {};
+      const issues = Array.isArray(q.issues) ? q.issues : [];
+      el.queueMeta.textContent = `Queue count: ${q.count ?? 0}`;
+      el.queueError.textContent = q.error ? `queue_error: ${q.error}` : "";
+
+      if (!issues.length) {
+        el.queueWrap.innerHTML = `<div class="msg">No open \`ai-fix\` issues in queue.</div>`;
+        return;
+      }
+
+      const rows = issues.map((issue) => `
+        <tr>
+          <td>#${issue.number}</td>
+          <td>${issue.title || "(no title)"}</td>
+          <td class="mono">${issue.updated_at || "-"}</td>
+          <td>${(issue.labels || []).join(", ")}</td>
+          <td>${issue.html_url ? `<a href="${issue.html_url}" target="_blank" rel="noreferrer">open</a>` : "-"}</td>
+        </tr>
+      `).join("");
+
+      el.queueWrap.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Issue</th>
+              <th>Title</th>
+              <th>Updated</th>
+              <th>Labels</th>
+              <th>Link</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function renderTracked(summary) {
+      const issues = Array.isArray(summary?.tracked_issues) ? summary.tracked_issues : [];
+      const worker = summary?.worker;
+      el.workerMeta.textContent = worker
+        ? `Worker running=${worker.running} cycles=${worker.cycles} last=${worker.last_cycle_finished_at || "-"}`
+        : "Worker: not started";
+      el.trackedMeta.textContent = `Tracked issues: ${issues.length}`;
+
+      if (!issues.length) {
+        el.trackedWrap.innerHTML = `<div class="msg">No tracked issue state yet for this repository.</div>`;
+        return;
+      }
+
+      const cards = issues.map((item) => {
+        const status = item.last_status || "unknown";
+        const statusCls = statusClass(status);
+        const links = [
+          item.pr_url ? `<a href="${item.pr_url}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
+          item.check_run_url ? `<a href="${item.check_run_url}" target="_blank" rel="noreferrer">check run</a>` : "",
+        ].filter(Boolean).join(" | ");
+        const retry = item.retry_after ? new Date(item.retry_after * 1000).toISOString() : "-";
+        const err = item.last_error ? `<div class="mono">error: ${String(item.last_error).slice(0, 140)}</div>` : "";
+        return `
+          <article class="issue">
+            <div class="top">
+              <span class="num">Issue #${item.issue_number}</span>
+              <span class="${statusCls}">${status}</span>
+            </div>
+            <div class="mono">branch: ${item.active_branch || "-"}</div>
+            <div class="mono">patch_ops=${item.patch_ops_count ?? "-"} patch_conf=${item.patch_confidence ?? "-"}</div>
+            <div class="mono">retry_after=${retry}</div>
+            <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>
+            ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${item.ai_stop_reason || "reason n/a"})</div>` : ""}
+            ${item.pending_manual_approval ? `<div class="chip warn">pending manual approval</div>` : ""}
+            ${err}
+          </article>
+        `;
+      }).join("");
+      el.trackedWrap.innerHTML = `<div class="issues">${cards}</div>`;
+    }
+
+    async function refreshCore() {
+      const [health, repos] = await Promise.all([fetchJson("/health"), fetchJson("/repos")]);
+      state.health = health;
+      state.repos = repos;
+      if (!state.selectedRepo && repos.length) state.selectedRepo = repos[0].repo;
+      renderHeader();
+      renderRepos();
+    }
+
+    async function refreshSummary() {
+      if (!state.selectedRepo) return;
+      el.selectedRepoTitle.textContent = `Repository: ${state.selectedRepo}`;
+      const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
+      state.summary = summary;
+      renderQueue(summary);
+      renderTracked(summary);
+    }
+
+    async function refreshAll() {
+      try {
+        await refreshCore();
+        await refreshSummary();
+      } catch (e) {
+        showToast(`refresh failed: ${e.message}`, true);
+      }
+    }
+
+    async function callAction(path, successText) {
+      try {
+        await fetchJson(path, { method: "POST" });
+        showToast(successText);
+        await refreshAll();
+      } catch (e) {
+        showToast(`action failed: ${e.message}`, true);
+      }
+    }
+
+    el.repoList.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const repo = btn.dataset.repo;
+      const action = btn.dataset.action;
+      if (!repo || !action) return;
+      if (action === "select") {
+        state.selectedRepo = repo;
+        await refreshAll();
+        return;
+      }
+      if (action === "start") return callAction(`/run/repo/${encodeURIComponent(repo)}`, `worker started for ${repo}`);
+      if (action === "stop") return callAction(`/stop/repo/${encodeURIComponent(repo)}`, `worker stopped for ${repo}`);
+    });
+
+    el.btnRunOnce.addEventListener("click", () => {
+      if (!state.selectedRepo) return;
+      callAction(`/run-once/repo/${encodeURIComponent(state.selectedRepo)}`, `run-once completed for ${state.selectedRepo}`);
+    });
+
+    el.btnStartWorker.addEventListener("click", () => {
+      if (!state.selectedRepo) return;
+      callAction(`/run/repo/${encodeURIComponent(state.selectedRepo)}`, `worker started for ${state.selectedRepo}`);
+    });
+
+    el.btnStopWorker.addEventListener("click", () => {
+      if (!state.selectedRepo) return;
+      callAction(`/stop/repo/${encodeURIComponent(state.selectedRepo)}`, `worker stopped for ${state.selectedRepo}`);
+    });
+
+    el.btnRefresh.addEventListener("click", refreshAll);
+
+    async function boot() {
+      await refreshAll();
+      state.refreshTimer = setInterval(refreshAll, 7000);
+    }
+    boot();
+  </script>
+</body>
+</html>

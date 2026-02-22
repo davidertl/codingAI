@@ -1,13 +1,18 @@
 import os
 import threading
+import time
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 import main
+from github.issue_manager import get_ai_issues
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 
 SERVICE_POLL_INTERVAL_SECONDS = int(os.getenv("SERVICE_POLL_INTERVAL_SECONDS", str(main.POLL_INTERVAL)))
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
 def _utc_now_iso():
@@ -129,12 +134,45 @@ class WorkerManager:
 
 manager = WorkerManager()
 app = FastAPI(title="CodingAI Control Plane", version="0.1.0")
+app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
 def _require_repo(repo: str):
     repos = main.get_available_repos()
     if repo not in repos:
         raise HTTPException(status_code=404, detail=f"Unknown repo '{repo}'. Available: {repos}")
+
+
+def _repo_state_summary(repo: str) -> list[dict]:
+    state = main.load_state()
+    repo_state = state.get(repo, {})
+    out = []
+    for key, value in repo_state.items():
+        if not (isinstance(key, str) and key.isdigit() and isinstance(value, dict)):
+            continue
+        out.append(
+            {
+                "issue_number": int(key),
+                "last_status": value.get("last_status"),
+                "pr_created": bool(value.get("pr_created")),
+                "pr_number": value.get("pr_number"),
+                "pr_url": value.get("pr_url"),
+                "check_run_url": value.get("check_run_url"),
+                "report_comment_id": value.get("report_comment_id"),
+                "patch_ops_count": value.get("patch_ops_count"),
+                "patch_confidence": value.get("patch_confidence"),
+                "strategy_confidence_threshold": value.get("strategy_confidence_threshold"),
+                "retry_after": value.get("retry_after", 0),
+                "pending_manual_approval": bool(value.get("pending_manual_approval")),
+                "ai_stopped": bool(value.get("ai_stopped")),
+                "ai_stop_reason": value.get("ai_stop_reason"),
+                "active_branch": value.get("active_branch"),
+                "last_error": value.get("last_error"),
+                "source_issue_updated_at": value.get("source_issue_updated_at"),
+            }
+        )
+    out.sort(key=lambda x: x["issue_number"])
+    return out
 
 
 @app.get("/health")
@@ -153,6 +191,16 @@ def health():
     }
 
 
+@app.get("/", include_in_schema=False)
+def ui_root():
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/ui", include_in_schema=False)
+def ui_alias():
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
 @app.get("/repos")
 def repos():
     available = main.get_available_repos()
@@ -163,6 +211,46 @@ def repos():
         }
         for repo in available
     ]
+
+
+@app.get("/queue/{repo}")
+def queue(repo: str):
+    _require_repo(repo)
+    try:
+        issues = get_ai_issues(repo)
+        queue_items = []
+        for issue in issues:
+            queue_items.append(
+                {
+                    "number": issue.get("number"),
+                    "title": issue.get("title"),
+                    "html_url": issue.get("html_url"),
+                    "updated_at": issue.get("updated_at"),
+                    "labels": [
+                        l.get("name")
+                        for l in issue.get("labels", [])
+                        if isinstance(l, dict) and l.get("name")
+                    ],
+                }
+            )
+        return {"repo": repo, "count": len(queue_items), "issues": queue_items, "error": ""}
+    except Exception as e:
+        return {"repo": repo, "count": 0, "issues": [], "error": str(e)[:500]}
+
+
+@app.get("/repo/{repo}/summary")
+def repo_summary(repo: str):
+    _require_repo(repo)
+    queue_data = queue(repo)
+    workers = manager.list_workers()
+    worker = next((w for w in workers if w.get("repo") == repo), None)
+    return {
+        "repo": repo,
+        "time_utc": _utc_now_iso(),
+        "worker": worker,
+        "queue": queue_data,
+        "tracked_issues": _repo_state_summary(repo),
+    }
 
 
 @app.get("/state")
@@ -195,6 +283,22 @@ def run_repo(repo: str):
         "running": True,
         "already_running": bool(snapshot.get("already_running")),
         "worker": snapshot,
+    }
+
+
+@app.post("/run-once/repo/{repo}")
+def run_repo_once(repo: str):
+    _require_repo(repo)
+    started = time.time()
+    try:
+        main.run_repo_cycle_once(repo)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])
+    duration_ms = int((time.time() - started) * 1000)
+    return {
+        "repo": repo,
+        "ran_once": True,
+        "duration_ms": duration_ms,
     }
 
 
