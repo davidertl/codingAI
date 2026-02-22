@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+.git
+.gitignore
+.vscode
+.pytest_cache
+ai-agent/venv
+workspaces
+ai-agent/state.json
+ai-agent/logs
+ai-agent/github_app/*.pem

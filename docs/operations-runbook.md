@@ -79,6 +79,14 @@ Start API mode, then open:
 
 `http://<host>:8000/` (or `/ui`)
 
+### 4. Docker Compose mode
+
+```bash
+CODINGAI_HTTP_PORT=8000 docker compose up --build
+```
+
+Volumes (host): `.env`, `github_app/`, `logs/`, `state.json`, `workspaces/`.
+
 ## Common env toggles
 
 1. `TARGET_REPOS=KRT-leadtool,KRT-Com_Discord`

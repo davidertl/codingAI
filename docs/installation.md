@@ -63,6 +63,17 @@ UI:
 
 - `http://<vm-host>:8000/` (or `/ui`)
 
+## Docker Compose (alternative)
+
+```bash
+CODINGAI_HTTP_PORT=8000 docker compose up --build
+```
+
+Mounts:
+- `ai-agent/.env` (read-only)
+- `ai-agent/github_app/` (read-only for `.pem`)
+- `ai-agent/logs`, `ai-agent/state.json`, `workspaces/` (writable)
+
 ## Notes
 
 - Script uses `sudo` when needed for apt; run from repo root.

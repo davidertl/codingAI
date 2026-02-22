@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  codingai-api:
+    build:
+      context: .
+      dockerfile: ai-agent/Dockerfile
+    container_name: codingai-api
+    ports:
+      - "${CODINGAI_HTTP_PORT:-8000}:8000"
+    environment:
+      - PORT=8000
+      - TARGET_REPOS=${TARGET_REPOS:-}
+      - RUN_ALL_REPOS=${RUN_ALL_REPOS:-false}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-local,openai}
+      - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
+      - LLM_REQUIRE_HEALTHY=${LLM_REQUIRE_HEALTHY:-true}
+      - OBS_EVENT_LOG_ENABLED=${OBS_EVENT_LOG_ENABLED:-true}
+    volumes:
+      - ./ai-agent/.env:/app/ai-agent/.env:ro
+      - ./ai-agent/github_app:/app/ai-agent/github_app:ro
+      - ./ai-agent/logs:/app/ai-agent/logs
+      - ./ai-agent/state.json:/app/ai-agent/state.json
+      - ./workspaces:/app/workspaces
+    restart: unless-stopped
