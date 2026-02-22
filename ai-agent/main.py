@@ -23,6 +23,7 @@ from github.pr_manager import (
     upsert_pr_comment,
 )
 from github.repo_manager import clone_or_update
+from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
 
 AVAILABLE_REPOS = [
@@ -672,6 +673,28 @@ def process_issue(repo, issue, state):
 
 def _run_repo_cycle(repo):
     state = load_state()
+
+    llm_ready = ensure_llm_ready(force=False)
+    llm_runtime = get_llm_runtime_status()
+    state["llm_runtime"] = {
+        "ready": bool(llm_ready.get("ready")),
+        "active_provider": llm_ready.get("active_provider"),
+        "requested_provider": llm_ready.get("requested_provider"),
+        "provider_chain": llm_ready.get("provider_chain", []),
+        "checked_at": llm_ready.get("checked_at", int(time.time())),
+        "checks": llm_ready.get("checks", []),
+        "telemetry_counters": llm_runtime.get("telemetry_counters", {}),
+        "telemetry_file": llm_runtime.get("telemetry_file"),
+    }
+    save_state(state)
+
+    if not llm_ready.get("ready"):
+        print(
+            f"LLM not ready (requested={llm_ready.get('requested_provider')}, "
+            f"chain={llm_ready.get('provider_chain')}). Skipping repo cycle for {repo}."
+        )
+        return
+
     try:
         issues = get_ai_issues(repo)
     except Exception as e:

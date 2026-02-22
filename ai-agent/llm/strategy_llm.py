@@ -8,10 +8,13 @@ import requests
 from dotenv import load_dotenv
 from llm.provider import (
     build_llm_request,
+    ensure_llm_ready,
     extract_output_text,
+    record_llm_request_result,
     llm_is_configured,
     provider_name,
     resolve_model,
+    try_failover,
 )
 
 load_dotenv("/home/codingai/ai-agent/.env")
@@ -57,21 +60,39 @@ def _post_with_backoff(*, model: str, instructions: str, input_text: str, max_ou
     retry_count = 0
     last_response = None
 
+    ready = ensure_llm_ready(force=False)
+    if not ready.get("ready"):
+        return None, retry_count
+
     for attempt in range(OPENAI_429_MAX_RETRIES + 1):
         try:
-            url, headers, payload = build_llm_request(
+            provider, url, headers, payload = build_llm_request(
                 model=model,
                 instructions=instructions,
                 input_text=input_text,
                 max_output_tokens=max_output_tokens,
             )
+            started = time.time()
             r = requests.post(
                 url,
                 headers=headers,
                 json=payload,
                 timeout=60,
             )
-        except requests.RequestException:
+            latency_ms = int((time.time() - started) * 1000)
+        except requests.RequestException as e:
+            err_text = str(e) or "request_exception"
+            record_llm_request_result(
+                provider=provider_name(),
+                operation="strategy_pick",
+                ok=False,
+                retry_count=retry_count,
+                error=err_text,
+            )
+            failover_to = try_failover(provider_name(), reason=err_text)
+            if failover_to:
+                retry_count += 1
+                continue
             if attempt >= OPENAI_429_MAX_RETRIES:
                 return None, retry_count
 
@@ -87,6 +108,15 @@ def _post_with_backoff(*, model: str, instructions: str, input_text: str, max_ou
         last_response = r
 
         if r.status_code == 429:
+            record_llm_request_result(
+                provider=provider,
+                operation="strategy_pick",
+                ok=False,
+                status_code=429,
+                retry_count=retry_count,
+                latency_ms=latency_ms,
+                error="rate_limited",
+            )
             if attempt >= OPENAI_429_MAX_RETRIES:
                 return r, retry_count
 
@@ -102,6 +132,19 @@ def _post_with_backoff(*, model: str, instructions: str, input_text: str, max_ou
             continue
 
         if 500 <= r.status_code < 600:
+            record_llm_request_result(
+                provider=provider,
+                operation="strategy_pick",
+                ok=False,
+                status_code=r.status_code,
+                retry_count=retry_count,
+                latency_ms=latency_ms,
+                error="server_error",
+            )
+            failover_to = try_failover(provider, reason=f"http_{r.status_code}")
+            if failover_to:
+                retry_count += 1
+                continue
             if attempt >= OPENAI_429_MAX_RETRIES:
                 return r, retry_count
 
@@ -114,6 +157,15 @@ def _post_with_backoff(*, model: str, instructions: str, input_text: str, max_ou
             time.sleep(delay)
             continue
 
+        record_llm_request_result(
+            provider=provider,
+            operation="strategy_pick",
+            ok=(r.status_code < 400),
+            status_code=r.status_code,
+            retry_count=retry_count,
+            latency_ms=latency_ms,
+            error="" if r.status_code < 400 else "client_error",
+        )
         return r, retry_count
 
     return last_response, retry_count

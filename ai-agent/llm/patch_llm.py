@@ -1,23 +1,30 @@
 import json
 import os
 import posixpath
+import random
 import re
+import time
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
 from llm.provider import (
     build_llm_request,
+    ensure_llm_ready,
     extract_output_text,
     llm_is_configured,
     provider_name,
+    record_llm_request_result,
     resolve_model,
+    try_failover,
 )
 
 load_dotenv("/home/codingai/ai-agent/.env")
 
 OPENAI_PATCH_MODEL = os.getenv("OPENAI_PATCH_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
 PATCH_LLM_MODEL = os.getenv("PATCH_LLM_MODEL", OPENAI_PATCH_MODEL)
+PATCH_LLM_MAX_RETRIES = int(os.getenv("PATCH_LLM_MAX_RETRIES", "2"))
+PATCH_LLM_BACKOFF_SECONDS = float(os.getenv("PATCH_LLM_BACKOFF_SECONDS", "1.5"))
 
 _SKIP_DIRS = {
     ".git",
@@ -226,6 +233,78 @@ def _parse_confidence(v: Any) -> float:
     return max(0.0, min(1.0, conf))
 
 
+def _post_patch_request(*, model: str, instructions: str, input_text: str, max_output_tokens: int, operation: str):
+    ready = ensure_llm_ready(force=False)
+    if not ready.get("ready"):
+        return None, "llm_not_ready"
+
+    for attempt in range(PATCH_LLM_MAX_RETRIES + 1):
+        provider, url, headers, payload = build_llm_request(
+            model=model,
+            instructions=instructions,
+            input_text=input_text,
+            max_output_tokens=max_output_tokens,
+        )
+        started = time.time()
+        try:
+            r = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=120,
+            )
+        except requests.RequestException as e:
+            error = str(e) or "request_exception"
+            record_llm_request_result(
+                provider=provider,
+                operation=operation,
+                ok=False,
+                retry_count=attempt,
+                error=error,
+            )
+            failover_to = try_failover(provider, reason=error)
+            if failover_to:
+                continue
+            if attempt >= PATCH_LLM_MAX_RETRIES:
+                return None, "request_failed"
+            delay = PATCH_LLM_BACKOFF_SECONDS * (2 ** attempt) + random.uniform(0.0, 0.25)
+            time.sleep(delay)
+            continue
+
+        latency_ms = int((time.time() - started) * 1000)
+        if 500 <= r.status_code < 600:
+            record_llm_request_result(
+                provider=provider,
+                operation=operation,
+                ok=False,
+                status_code=r.status_code,
+                retry_count=attempt,
+                latency_ms=latency_ms,
+                error="server_error",
+            )
+            failover_to = try_failover(provider, reason=f"http_{r.status_code}")
+            if failover_to:
+                continue
+            if attempt >= PATCH_LLM_MAX_RETRIES:
+                return r, ""
+            delay = PATCH_LLM_BACKOFF_SECONDS * (2 ** attempt) + random.uniform(0.0, 0.25)
+            time.sleep(delay)
+            continue
+
+        record_llm_request_result(
+            provider=provider,
+            operation=operation,
+            ok=(r.status_code < 400),
+            status_code=r.status_code,
+            retry_count=attempt,
+            latency_ms=latency_ms,
+            error="" if r.status_code < 400 else "client_error",
+        )
+        return r, ""
+
+    return None, "request_failed"
+
+
 def _is_test_path(path: str) -> bool:
     p = path.replace("\\", "/").lower()
     base = os.path.basename(p)
@@ -298,23 +377,24 @@ def propose_patch_ops(
     }
 
     model = resolve_model(PATCH_LLM_MODEL)
-    url, headers, payload = build_llm_request(
+    r, request_error = _post_patch_request(
         model=model,
         instructions=instructions,
         input_text=json.dumps(user_input, ensure_ascii=False),
         max_output_tokens=3500,
+        operation="patch_generate",
     )
-    r = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
+    if r is None:
+        return {
+            "patch_ops": [],
+            "reason": f"LLM provider '{provider_name()}' request failed ({request_error}); patch generation unavailable.",
+            "confidence": 0.0,
+        }
 
     if r.status_code >= 400:
         return {
             "patch_ops": [],
-            "reason": f"OpenAI API error {r.status_code}; patch generation unavailable.",
+            "reason": f"LLM provider '{provider_name()}' API error {r.status_code}; patch generation unavailable.",
             "confidence": 0.0,
         }
 
@@ -410,23 +490,24 @@ def propose_test_patch_ops(
     }
 
     model = resolve_model(PATCH_LLM_MODEL)
-    url, headers, payload = build_llm_request(
+    r, request_error = _post_patch_request(
         model=model,
         instructions=instructions,
         input_text=json.dumps(user_input, ensure_ascii=False),
         max_output_tokens=2500,
+        operation="test_patch_generate",
     )
-    r = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
+    if r is None:
+        return {
+            "patch_ops": [],
+            "reason": f"LLM provider '{provider_name()}' request failed ({request_error}); test patch generation unavailable.",
+            "confidence": 0.0,
+        }
 
     if r.status_code >= 400:
         return {
             "patch_ops": [],
-            "reason": f"OpenAI API error {r.status_code}; test patch generation unavailable.",
+            "reason": f"LLM provider '{provider_name()}' API error {r.status_code}; test patch generation unavailable.",
             "confidence": 0.0,
         }
 
