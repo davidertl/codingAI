@@ -331,6 +331,14 @@ def _apply_strategy_memory_update(state, repo, test_report):
     state.setdefault("strategy_memory", {})[repo] = memory_update
 
 
+def _apply_error_memory_update(state, repo, test_report):
+    updates = test_report.get("error_memory_update")
+    if not isinstance(updates, dict) or not updates:
+        return
+    repo_map = state.setdefault("strategy_error_memory", {}).setdefault(repo, {})
+    repo_map.update(updates)
+
+
 def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id, phrase):
     now = int(time.time())
     issue_state = _get_issue_state(state, repo, issue_number)
@@ -957,6 +965,7 @@ def process_issue(repo, issue, state, policy=None):
         branch_sha = get_branch_sha(repo, branch)
         base_sha = branch_sha or get_branch_sha(repo, default_branch)
         repo_strategy_memory = state.get("strategy_memory", {}).get(repo, {})
+        repo_error_memory = state.get("strategy_error_memory", {}).get(repo, {})
 
         if not base_sha:
             raise RuntimeError("Could not resolve base SHA for patch pipeline.")
@@ -1073,6 +1082,7 @@ def process_issue(repo, issue, state, policy=None):
             repo_name=repo,
             max_attempts=strategy_max_attempts,
             strategy_memory=repo_strategy_memory,
+            error_memory=repo_error_memory,
             min_confidence_for_switch=confidence_threshold,
             strategy_quarantine_threshold=strategy_quarantine_threshold,
             strategy_quarantine_seconds=strategy_quarantine_seconds,
@@ -1221,6 +1231,7 @@ def process_issue(repo, issue, state, policy=None):
                 )
 
         _apply_strategy_memory_update(state, repo, test_report)
+        _apply_error_memory_update(state, repo, test_report)
 
         if not success:
             _register_failure(

@@ -1,5 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.4
+Version: 1.3.5
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
@@ -14,6 +14,7 @@ Version: 1.3.4
 - Strategy memory/quarantine persisted (to move to SQLite); error fingerprints map to successful strategy chains.
 - UI surfaces “similar failures”; strategies auto-biased by history.
 
+Status: Implemented (error fingerprint → preferred strategy memory used before LLM; persisted in state).
 ## Phase 18 – Research (Local-First)
 - SearxNG service; research cache (query/results/summary TTL).
 - Summaries via local LLM; optional API fallback toggle.

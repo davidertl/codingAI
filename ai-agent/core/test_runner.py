@@ -406,6 +406,7 @@ def run_tests(
     repo_name: str,
     max_attempts: int = 3,
     strategy_memory: dict | None = None,
+    error_memory: dict | None = None,
     min_confidence_for_switch: float = 0.65,
     strategy_quarantine_threshold: int = 3,
     strategy_quarantine_seconds: int = 12 * 60 * 60,
@@ -423,6 +424,7 @@ def run_tests(
     """
     repo_analysis = analyze_repo(repo_path)
     memory = _normalize_strategy_memory(strategy_memory)
+    error_memory = error_memory or {}
     now_ts = int(time.time())
     max_attempts = max(1, int(max_attempts))
     strategy_quarantine_threshold = max(1, _safe_int(strategy_quarantine_threshold, 3))
@@ -562,6 +564,16 @@ def run_tests(
             report["selected_strategy_confidence"] = last_selection_confidence
             report["selected_strategy_reason"] = last_selection_reason
             report["strategy_memory_update"] = memory
+            if report["attempts"]:
+                updates = {}
+                for a in report["attempts"]:
+                    if a.get("result") == "failed" and a.get("error_fingerprint"):
+                        updates[a["error_fingerprint"]] = {
+                            "preferred_strategy": current["id"],
+                            "updated_at": int(time.time()),
+                        }
+                if updates:
+                    report["error_memory_update"] = updates
             return True, out, report
 
         last_error = relevant_error or out or "Unknown failure."
@@ -604,6 +616,20 @@ def run_tests(
             last_selection_reason = f"LLM-selected (conf={llm_confidence:.2f}). {llm_reason}"
             last_selection_confidence = llm_confidence
             continue
+
+        # History bias: if error fingerprint seen before with known winner strategy
+        if attempt_entry["error_fingerprint"]:
+            hist = error_memory.get(attempt_entry["error_fingerprint"])
+            if hist:
+                preferred = hist.get("preferred_strategy")
+                idx_hist = next((i for i, s in enumerate(remaining) if s["id"] == preferred), None)
+                if idx_hist is not None:
+                    current = remaining.pop(idx_hist)
+                    last_selection_reason = (
+                        f"History-selected for fingerprint {attempt_entry['error_fingerprint']} -> {preferred}."
+                    )
+                    last_selection_confidence = 0.9
+                    continue
 
         memory_pick, memory_score = _pick_by_memory(
             remaining,
