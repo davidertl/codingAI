@@ -1,0 +1,9 @@
+{
+  "pr": {
+    "max_per_day": 2,
+    "max_per_week": 10
+  },
+  "strategy": {
+    "switch_confidence_threshold": 0.7
+  }
+}

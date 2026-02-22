@@ -19,6 +19,16 @@ def _utc_now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _utc_day_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _utc_week_key():
+    now = datetime.now(timezone.utc)
+    year, week, _ = now.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
 class RepoWorker:
     def __init__(self, repo: str, poll_interval_seconds: int):
         self.repo = repo
@@ -133,7 +143,7 @@ class WorkerManager:
 
 
 manager = WorkerManager()
-app = FastAPI(title="CodingAI Control Plane", version="0.1.0")
+app = FastAPI(title="CodingAI Control Plane", version="0.2.0")
 app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
@@ -175,6 +185,28 @@ def _repo_state_summary(repo: str) -> list[dict]:
     return out
 
 
+def _repo_budget_status(repo: str) -> dict:
+    state = main.load_state()
+    policy = main.get_repo_policy_config(repo, force=False)
+    day_key = _utc_day_key()
+    week_key = _utc_week_key()
+    daily_count = int(state.get("daily_pr_counts", {}).get(repo, {}).get(day_key, 0))
+    weekly_count = int(state.get("weekly_pr_counts", {}).get(repo, {}).get(week_key, 0))
+
+    max_day = int(policy.get("pr", {}).get("max_per_day", 0))
+    max_week = int(policy.get("pr", {}).get("max_per_week", 0))
+    return {
+        "day_key": day_key,
+        "week_key": week_key,
+        "daily_count": daily_count,
+        "weekly_count": weekly_count,
+        "max_per_day": max_day,
+        "max_per_week": max_week,
+        "daily_remaining": None if max_day <= 0 else max(0, max_day - daily_count),
+        "weekly_remaining": None if max_week <= 0 else max(0, max_week - weekly_count),
+    }
+
+
 @app.get("/health")
 def health():
     llm_ready = ensure_llm_ready(force=False)
@@ -213,6 +245,28 @@ def repos():
     ]
 
 
+@app.get("/policies")
+def policies(force: bool = False):
+    snapshot = main.get_policies_config(force=force)
+    return {
+        "time_utc": _utc_now_iso(),
+        "available_repos": main.get_available_repos(),
+        "policies": snapshot,
+    }
+
+
+@app.get("/policy/{repo}")
+def repo_policy(repo: str, force: bool = False):
+    _require_repo(repo)
+    policy = main.get_repo_policy_config(repo, force=force)
+    return {
+        "repo": repo,
+        "time_utc": _utc_now_iso(),
+        "policy": policy,
+        "budget": _repo_budget_status(repo),
+    }
+
+
 @app.get("/queue/{repo}")
 def queue(repo: str):
     _require_repo(repo)
@@ -244,12 +298,15 @@ def repo_summary(repo: str):
     queue_data = queue(repo)
     workers = manager.list_workers()
     worker = next((w for w in workers if w.get("repo") == repo), None)
+    policy = main.get_repo_policy_config(repo, force=False)
     return {
         "repo": repo,
         "time_utc": _utc_now_iso(),
         "worker": worker,
         "queue": queue_data,
         "tracked_issues": _repo_state_summary(repo),
+        "policy": policy,
+        "budget": _repo_budget_status(repo),
     }
 
 

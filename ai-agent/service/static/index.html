@@ -298,7 +298,7 @@
     <section class="panel">
       <div class="hd">
         <h1 class="title">CodingAI Dashboard</h1>
-        <div class="subtitle">Phase 9 MVP: queue, runtime status, controls, PR/test visibility</div>
+        <div class="subtitle">Phase 10: queue, runtime status, controls, PR/test visibility, governance</div>
         <div class="kpis">
           <div class="kpi">
             <div class="k">LLM</div>
@@ -336,6 +336,8 @@
           <div class="row mono">
             <span id="workerMeta">Worker: -</span>
             <span id="queueMeta">Queue: -</span>
+            <span id="policyMeta">Policy: -</span>
+            <span id="budgetMeta">Budget: -</span>
           </div>
         </section>
 
@@ -378,6 +380,8 @@
       selectedRepoTitle: document.getElementById("selectedRepoTitle"),
       workerMeta: document.getElementById("workerMeta"),
       queueMeta: document.getElementById("queueMeta"),
+      policyMeta: document.getElementById("policyMeta"),
+      budgetMeta: document.getElementById("budgetMeta"),
       queueError: document.getElementById("queueError"),
       queueWrap: document.getElementById("queueWrap"),
       trackedMeta: document.getElementById("trackedMeta"),
@@ -483,9 +487,17 @@
     function renderTracked(summary) {
       const issues = Array.isArray(summary?.tracked_issues) ? summary.tracked_issues : [];
       const worker = summary?.worker;
+      const policy = summary?.policy || {};
+      const budget = summary?.budget || {};
       el.workerMeta.textContent = worker
         ? `Worker running=${worker.running} cycles=${worker.cycles} last=${worker.last_cycle_finished_at || "-"}`
         : "Worker: not started";
+      const mode = policy.dry_run ? "DRY-RUN" : "LIVE";
+      const policyEnabled = policy.enabled === false ? "disabled" : "enabled";
+      el.policyMeta.textContent = `Policy: ${policyEnabled} mode=${mode}`;
+      const dayBudget = budget.max_per_day > 0 ? `${budget.daily_count}/${budget.max_per_day}` : `${budget.daily_count}/∞`;
+      const weekBudget = budget.max_per_week > 0 ? `${budget.weekly_count}/${budget.max_per_week}` : `${budget.weekly_count}/∞`;
+      el.budgetMeta.textContent = `Budget: day=${dayBudget} week=${weekBudget}`;
       el.trackedMeta.textContent = `Tracked issues: ${issues.length}`;
 
       if (!issues.length) {

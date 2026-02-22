@@ -4,6 +4,8 @@ import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
+from core.policy import get_policy_snapshot as load_policy_snapshot
+from core.policy import get_repo_policy
 from core.test_runner import analyze_repo, run_tests
 from github.checks_manager import create_completed_check_run
 from github.git_api_commit import (
@@ -36,25 +38,7 @@ if TARGET_REPOS_ENV:
 
 STATE_FILE = "/home/codingai/ai-agent/state.json"
 POLL_INTERVAL = 300
-FAIL_COOLDOWN_SECONDS = 6 * 60 * 60  # 6h
-MAX_PATCH_OPS = 20
-MAX_TEST_PATCH_OPS = int(os.getenv("MAX_TEST_PATCH_OPS", "6"))
-MAX_TOTAL_PATCH_OPS = int(os.getenv("MAX_TOTAL_PATCH_OPS", "30"))
-AUTO_GENERATE_TEST_PATCHES = os.getenv("AUTO_GENERATE_TEST_PATCHES", "false").strip().lower() in {"1", "true", "yes", "on"}
 REPORT_MARKER = "<!-- codingai-test-report -->"
-AI_STOP_PHRASE = "AI Stop"
-STRATEGY_SWITCH_CONFIDENCE_THRESHOLD = float(os.getenv("STRATEGY_SWITCH_CONFIDENCE_THRESHOLD", "0.65"))
-MAX_PRS_PER_REPO_PER_DAY = int(os.getenv("MAX_PRS_PER_REPO_PER_DAY", "3"))
-MANUAL_APPROVAL_REQUIRED = (os.getenv("MANUAL_APPROVAL_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"})
-PR_AUTO_UPDATE_ENABLED = (os.getenv("PR_AUTO_UPDATE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
-MANUAL_APPROVAL_LABELS = {
-    s.strip().lower()
-    for s in os.getenv("MANUAL_APPROVAL_LABELS", "ai-approve,ai-approved,manual-approval-granted").split(",")
-    if s.strip()
-}
-MANUAL_APPROVAL_TOKEN = os.getenv("MANUAL_APPROVAL_TOKEN", "[ai-approve]").strip().lower()
-ENABLE_GITHUB_CHECKS = os.getenv("ENABLE_GITHUB_CHECKS", "true").strip().lower() in {"1", "true", "yes", "on"}
-CHECK_RUN_NAME = os.getenv("CHECK_RUN_NAME", "CodingAI Local Validation")
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -108,24 +92,32 @@ def _get_issue_state(state, repo, number):
     return state.setdefault(repo, {}).setdefault(str(number), {})
 
 
-def _register_failure(state, repo, number, summary, details):
+def _register_failure(state, repo, number, summary, details, *, policy):
     details = (details or "").strip()
     details = details[:12000]
+    dry_run = bool(policy.get("dry_run", False))
+    publish_failure_issue = bool(policy.get("safety", {}).get("publish_failure_issue", True))
+    ai_stop_phrase = str(policy.get("safety", {}).get("ai_stop_phrase", "AI Stop"))
+    cooldown_seconds = int(policy.get("safety", {}).get("failure_cooldown_seconds", 6 * 60 * 60))
 
-    try:
-        create_issue(
-            repo,
-            f"AI Failure for Issue #{number}",
-            f"{summary}\n\n```\n{details}\n```",
-        )
-    except Exception as e:
-        print(f"Failed to publish failure issue for {repo}#{number}: {e}")
+    if publish_failure_issue and not dry_run:
+        try:
+            create_issue(
+                repo,
+                f"AI Failure for Issue #{number}",
+                f"{summary}\n\n```\n{details}\n```",
+            )
+        except Exception as e:
+            print(f"Failed to publish failure issue for {repo}#{number}: {e}")
 
     issue_state = _get_issue_state(state, repo, number)
     issue_state["pr_created"] = bool(issue_state.get("pr_created", False))
-    issue_state["last_status"] = "failed"
+    issue_state["last_status"] = "dry_run_failed" if dry_run else "failed"
     issue_state["last_error"] = details[:2000]
-    issue_state["retry_after"] = int(time.time()) + FAIL_COOLDOWN_SECONDS
+    issue_state["retry_after"] = int(time.time()) + cooldown_seconds
+    issue_state["dry_run"] = dry_run
+    issue_state["ai_stop_phrase"] = ai_stop_phrase
+    issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
     save_state(state)
 
 
@@ -136,23 +128,23 @@ def _apply_strategy_memory_update(state, repo, test_report):
     state.setdefault("strategy_memory", {})[repo] = memory_update
 
 
-def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id):
+def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id, phrase):
     now = int(time.time())
     issue_state = _get_issue_state(state, repo, issue_number)
     issue_state["ai_stopped"] = True
     issue_state["ai_stopped_at"] = now
-    issue_state["ai_stop_reason"] = AI_STOP_PHRASE
+    issue_state["ai_stop_reason"] = phrase
     issue_state["pr_number"] = pr_number
     issue_state["ai_stop_comment_id"] = comment_id
 
     state.setdefault("pr_controls", {})[str(pr_number)] = {
         "ai_stopped": True,
         "stopped_at": now,
-        "reason": AI_STOP_PHRASE,
+        "reason": phrase,
     }
 
 
-def _sync_ai_stop_state(state, repo, issue_number, branch):
+def _sync_ai_stop_state(state, repo, issue_number, branch, policy):
     issue_state = _get_issue_state(state, repo, issue_number)
     if issue_state.get("ai_stopped"):
         return True
@@ -168,7 +160,8 @@ def _sync_ai_stop_state(state, repo, issue_number, branch):
         issue_state["pr_created"] = True
         save_state(state)
 
-    stopped, comment = has_ai_stop_comment(repo, pr_number, phrase=AI_STOP_PHRASE)
+    phrase = str(policy.get("safety", {}).get("ai_stop_phrase", "AI Stop"))
+    stopped, comment = has_ai_stop_comment(repo, pr_number, phrase=phrase)
     if not stopped:
         return False
 
@@ -178,6 +171,7 @@ def _sync_ai_stop_state(state, repo, issue_number, branch):
         issue_number=issue_number,
         pr_number=pr_number,
         comment_id=comment.get("id") if comment else None,
+        phrase=phrase,
     )
     save_state(state)
     return True
@@ -195,16 +189,21 @@ def _extract_issue_labels(issue):
     return out
 
 
-def _has_manual_approval(issue):
-    if not MANUAL_APPROVAL_REQUIRED:
+def _has_manual_approval(issue, policy):
+    approval = policy.get("approval", {})
+    required = bool(approval.get("required", False))
+    labels_required = set(approval.get("labels", []))
+    approval_token = str(approval.get("token", "")).strip().lower()
+
+    if not required:
         return True
 
     labels = _extract_issue_labels(issue)
-    if labels.intersection(MANUAL_APPROVAL_LABELS):
+    if labels.intersection(labels_required):
         return True
 
     text = f"{issue.get('title', '')}\n{issue.get('body', '')}".lower()
-    if MANUAL_APPROVAL_TOKEN and MANUAL_APPROVAL_TOKEN in text:
+    if approval_token and approval_token in text:
         return True
     if "ai approve" in text:
         return True
@@ -222,6 +221,26 @@ def _seconds_until_next_utc_day():
     return max(60, int((tomorrow - now).total_seconds()))
 
 
+def _utc_week_key():
+    now = datetime.now(timezone.utc)
+    year, week, _ = now.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def _seconds_until_next_utc_week():
+    now = datetime.now(timezone.utc)
+    days_until_next_monday = (7 - now.weekday()) % 7
+    if days_until_next_monday == 0:
+        days_until_next_monday = 7
+    next_week = (now + timedelta(days=days_until_next_monday)).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    return max(60, int((next_week - now).total_seconds()))
+
+
 def _get_daily_pr_count(state, repo, day_key):
     return int(state.get("daily_pr_counts", {}).get(repo, {}).get(day_key, 0))
 
@@ -232,7 +251,28 @@ def _increment_daily_pr_count(state, repo, day_key):
     state["daily_pr_counts"][repo][day_key] = current + 1
 
 
-def _resolve_branch_for_issue(state, repo, issue_number):
+def _get_weekly_pr_count(state, repo, week_key):
+    return int(state.get("weekly_pr_counts", {}).get(repo, {}).get(week_key, 0))
+
+
+def _increment_weekly_pr_count(state, repo, week_key):
+    state.setdefault("weekly_pr_counts", {}).setdefault(repo, {})
+    current = int(state["weekly_pr_counts"][repo].get(week_key, 0))
+    state["weekly_pr_counts"][repo][week_key] = current + 1
+
+
+def _render_branch_name(template, issue_number, iteration, repo):
+    try:
+        rendered = str(template).format(issue=issue_number, iteration=iteration, repo=repo)
+    except Exception:
+        rendered = f"ai/issue-{issue_number}-iter-{iteration}"
+    rendered = rendered.strip().replace(" ", "-")
+    if not rendered:
+        rendered = f"ai/issue-{issue_number}-iter-{iteration}"
+    return rendered
+
+
+def _resolve_branch_for_issue(state, repo, issue_number, policy):
     issue_state = _get_issue_state(state, repo, issue_number)
     active_branch = issue_state.get("active_branch")
 
@@ -256,7 +296,8 @@ def _resolve_branch_for_issue(state, repo, issue_number):
 
     if not active_branch:
         next_iter = int(issue_state.get("branch_iteration", 0)) + 1
-        active_branch = f"ai/issue-{int(issue_number)}-iter-{next_iter}"
+        template = policy.get("branch", {}).get("template", "ai/issue-{issue}-iter-{iteration}")
+        active_branch = _render_branch_name(template, int(issue_number), next_iter, repo)
         issue_state["branch_iteration"] = next_iter
         issue_state["active_branch"] = active_branch
 
@@ -409,15 +450,29 @@ def _build_check_run_output(issue_number, test_report, test_output, patch_result
     return title, summary, text
 
 
-def process_issue(repo, issue, state):
+def process_issue(repo, issue, state, policy=None):
+    policy = policy or get_repo_policy(repo)
     number = str(issue["number"])
     issue_state = _get_issue_state(state, repo, number)
+    pr_policy = policy.get("pr", {})
+    patch_policy = policy.get("patch", {})
+    strategy_policy = policy.get("strategy", {})
+    dry_run = bool(policy.get("dry_run", False))
+
+    issue_state["dry_run"] = dry_run
+    issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
+
+    if not bool(policy.get("enabled", True)):
+        issue_state["last_status"] = "policy_disabled"
+        save_state(state)
+        print(f"Issue #{number} skipped because repo policy is disabled.")
+        return
 
     # resolve active/open PR branch first (iteration naming strategy)
     try:
-        branch, existing_pr = _resolve_branch_for_issue(state, repo, number)
+        branch, existing_pr = _resolve_branch_for_issue(state, repo, number, policy)
 
-        if _sync_ai_stop_state(state, repo, number, branch):
+        if _sync_ai_stop_state(state, repo, number, branch, policy):
             print(f"Issue #{number} has AI Stop on PR comments. Processing disabled.")
             return
     except Exception as e:
@@ -427,6 +482,7 @@ def process_issue(repo, issue, state):
             number,
             f"Phase 5 preflight failed for issue #{number}.",
             str(e),
+            policy=policy,
         )
         return
 
@@ -436,7 +492,7 @@ def process_issue(repo, issue, state):
         issue_state["pr_number"] = existing_pr["number"]
         issue_state["pr_url"] = existing_pr["url"]
 
-    if not _has_manual_approval(issue):
+    if not _has_manual_approval(issue, policy):
         issue_state["pending_manual_approval"] = True
         issue_state["last_status"] = "pending_manual_approval"
         save_state(state)
@@ -444,9 +500,15 @@ def process_issue(repo, issue, state):
         return
     issue_state["pending_manual_approval"] = False
 
+    if dry_run:
+        issue_updated_at = str(issue.get("updated_at", ""))
+        if issue_updated_at and issue_updated_at == str(issue_state.get("dry_run_source_issue_updated_at", "")):
+            print(f"Issue #{number} unchanged since previous dry-run execution. Skipping.")
+            return
+
     # Existing PR behavior: either skip completely or auto-update only when issue changed.
     if issue_state.get("pr_created"):
-        if not PR_AUTO_UPDATE_ENABLED:
+        if not bool(pr_policy.get("auto_update_enabled", True)):
             print(f"Issue #{number} has existing PR and auto-update is disabled. Skipping.")
             return
 
@@ -460,16 +522,30 @@ def process_issue(repo, issue, state):
         print(f"Issue #{number} in cooldown. Skipping.")
         return
 
-    # Daily safety cap for creating NEW PRs
-    if not issue_state.get("pr_created") and MAX_PRS_PER_REPO_PER_DAY > 0:
+    # Daily and weekly safety caps for creating NEW PRs
+    max_prs_per_day = int(pr_policy.get("max_per_day", 0))
+    max_prs_per_week = int(pr_policy.get("max_per_week", 0))
+    if not dry_run and not issue_state.get("pr_created") and max_prs_per_day > 0:
         day_key = _utc_day_key()
         daily_count = _get_daily_pr_count(state, repo, day_key)
-        if daily_count >= MAX_PRS_PER_REPO_PER_DAY:
+        if daily_count >= max_prs_per_day:
             issue_state["last_status"] = "daily_pr_limit_reached"
             issue_state["retry_after"] = int(time.time()) + _seconds_until_next_utc_day()
             save_state(state)
             print(
-                f"Repo {repo} reached daily PR cap ({daily_count}/{MAX_PRS_PER_REPO_PER_DAY}) on {day_key}. Skipping."
+                f"Repo {repo} reached daily PR cap ({daily_count}/{max_prs_per_day}) on {day_key}. Skipping."
+            )
+            return
+
+    if not dry_run and not issue_state.get("pr_created") and max_prs_per_week > 0:
+        week_key = _utc_week_key()
+        weekly_count = _get_weekly_pr_count(state, repo, week_key)
+        if weekly_count >= max_prs_per_week:
+            issue_state["last_status"] = "weekly_pr_limit_reached"
+            issue_state["retry_after"] = int(time.time()) + _seconds_until_next_utc_week()
+            save_state(state)
+            print(
+                f"Repo {repo} reached weekly PR cap ({weekly_count}/{max_prs_per_week}) on {week_key}. Skipping."
             )
             return
 
@@ -495,7 +571,7 @@ def process_issue(repo, issue, state):
             repo_name=repo,
             issue=issue,
             repo_analysis=repo_analysis,
-            max_ops=MAX_PATCH_OPS,
+            max_ops=int(patch_policy.get("max_patch_ops", 20)),
         )
         patch_ops = patch_result.get("patch_ops", [])
         patch_result["test_patch_ops_added"] = 0
@@ -508,17 +584,18 @@ def process_issue(repo, issue, state):
                 number,
                 f"Patch generation failed for issue #{number}.",
                 reason,
+                policy=policy,
             )
             return
 
-        if AUTO_GENERATE_TEST_PATCHES:
+        if bool(patch_policy.get("auto_generate_test_patches", False)):
             test_patch_result = propose_test_patch_ops(
                 repo_path=repo_path,
                 repo_name=repo,
                 issue=issue,
                 repo_analysis=repo_analysis,
                 base_patch_ops=patch_ops,
-                max_ops=MAX_TEST_PATCH_OPS,
+                max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
             )
             test_patch_ops = test_patch_result.get("patch_ops", [])
             if test_patch_ops:
@@ -526,7 +603,7 @@ def process_issue(repo, issue, state):
                 patch_ops, added = _merge_patch_ops(
                     patch_ops,
                     test_patch_ops,
-                    max_ops=MAX_TOTAL_PATCH_OPS,
+                    max_ops=int(patch_policy.get("max_total_patch_ops", 30)),
                 )
                 patch_result["test_patch_ops_added"] = added
                 patch_result["test_patch_confidence"] = test_patch_conf
@@ -547,16 +624,18 @@ def process_issue(repo, issue, state):
                 number,
                 f"Patch ops produced no effective file changes for issue #{number}.",
                 patch_result.get("reason", ""),
+                policy=policy,
             )
             return
 
         print("Patch applied locally. Running tests on patched repository...")
+        confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
         success, output, test_report = run_tests(
             repo_path,
             repo_name=repo,
             max_attempts=3,
             strategy_memory=repo_strategy_memory,
-            min_confidence_for_switch=STRATEGY_SWITCH_CONFIDENCE_THRESHOLD,
+            min_confidence_for_switch=confidence_threshold,
         )
         _apply_strategy_memory_update(state, repo, test_report)
 
@@ -567,7 +646,27 @@ def process_issue(repo, issue, state):
                 number,
                 f"Patched repository failed tests for issue #{number}.",
                 output,
+                policy=policy,
             )
+            return
+
+        if dry_run:
+            issue_state["active_branch"] = branch
+            issue_state["last_status"] = "dry_run_passed"
+            issue_state["patch_ops_count"] = len(patch_ops)
+            issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
+            issue_state["strategy_confidence_threshold"] = confidence_threshold
+            issue_state["dry_run_source_issue_updated_at"] = str(issue.get("updated_at", ""))
+            issue_state["retry_after"] = 0
+            issue_state["dry_run_actions"] = {
+                "would_create_branch": not bool(branch_sha),
+                "would_commit_patch_ops": len(patch_ops),
+                "would_create_or_update_pr": True,
+                "would_publish_check_run": bool(pr_policy.get("enable_github_checks", True)),
+                "would_upsert_pr_comment": True,
+            }
+            save_state(state)
+            print("Dry-run mode enabled. GitHub write operations were skipped.")
             return
 
         print("Patched tests passed. Creating commit via GitHub API...")
@@ -597,16 +696,18 @@ def process_issue(repo, issue, state):
                 number,
                 f"PR creation failed for issue #{number}.",
                 "Commit was created and branch updated, but PR creation returned no result.",
+                policy=policy,
             )
             return
 
         if pr_info.get("created"):
             _increment_daily_pr_count(state, repo, _utc_day_key())
+            _increment_weekly_pr_count(state, repo, _utc_week_key())
 
         print("PR URL:", pr_info["url"])
 
         check_run_url = None
-        if ENABLE_GITHUB_CHECKS:
+        if bool(pr_policy.get("enable_github_checks", True)):
             try:
                 check_title, check_summary, check_text = _build_check_run_output(
                     issue_number=number,
@@ -617,7 +718,7 @@ def process_issue(repo, issue, state):
                 )
                 check_run = create_completed_check_run(
                     repo,
-                    name=CHECK_RUN_NAME,
+                    name=str(pr_policy.get("check_run_name", "CodingAI Local Validation")),
                     head_sha=commit_sha,
                     conclusion="success",
                     title=check_title,
@@ -652,13 +753,14 @@ def process_issue(repo, issue, state):
         issue_state["last_status"] = "passed"
         issue_state["patch_ops_count"] = len(patch_ops)
         issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
-        issue_state["strategy_confidence_threshold"] = STRATEGY_SWITCH_CONFIDENCE_THRESHOLD
+        issue_state["strategy_confidence_threshold"] = confidence_threshold
         issue_state["pr_number"] = pr_info["number"]
         issue_state["pr_url"] = pr_info["url"]
         issue_state["check_run_url"] = check_run_url
         issue_state["report_comment_id"] = comment_result.get("id")
         issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
         issue_state["retry_after"] = 0
+        issue_state["dry_run"] = False
         save_state(state)
 
     except Exception as e:
@@ -668,11 +770,13 @@ def process_issue(repo, issue, state):
             number,
             f"Patch pipeline failed for issue #{number}.",
             str(e),
+            policy=policy,
         )
 
 
 def _run_repo_cycle(repo):
     state = load_state()
+    repo_policy = get_repo_policy(repo)
 
     llm_ready = ensure_llm_ready(force=False)
     llm_runtime = get_llm_runtime_status()
@@ -686,7 +790,19 @@ def _run_repo_cycle(repo):
         "telemetry_counters": llm_runtime.get("telemetry_counters", {}),
         "telemetry_file": llm_runtime.get("telemetry_file"),
     }
+    state.setdefault("policy_runtime", {})[repo] = {
+        "enabled": bool(repo_policy.get("enabled", True)),
+        "dry_run": bool(repo_policy.get("dry_run", False)),
+        "max_prs_per_day": int(repo_policy.get("pr", {}).get("max_per_day", 0)),
+        "max_prs_per_week": int(repo_policy.get("pr", {}).get("max_per_week", 0)),
+        "policy_loaded_at": int(repo_policy.get("_meta", {}).get("loaded_at", int(time.time()))),
+        "policy_errors": list(repo_policy.get("_meta", {}).get("errors", [])),
+    }
     save_state(state)
+
+    if not repo_policy.get("enabled", True):
+        print(f"Policy disabled repo cycle for {repo}.")
+        return
 
     if not llm_ready.get("ready"):
         print(
@@ -702,7 +818,7 @@ def _run_repo_cycle(repo):
         return
 
     for issue in issues:
-        process_issue(repo, issue, state)
+        process_issue(repo, issue, state, policy=repo_policy)
 
 
 def run_repo_cycle_once(repo):
@@ -711,6 +827,14 @@ def run_repo_cycle_once(repo):
 
 def get_available_repos():
     return list(AVAILABLE_REPOS)
+
+
+def get_repo_policy_config(repo, force=False):
+    return get_repo_policy(repo, force=force)
+
+
+def get_policies_config(force=False):
+    return load_policy_snapshot(force=force)
 
 
 def loop(repo):

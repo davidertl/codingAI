@@ -1,39 +1,51 @@
 # Phase 8 API Control Plane
 
-The agent now includes a FastAPI control plane that manages background workers per repository.
+Source: `ai-agent/service/api.py`
+
+## Purpose
+
+Expose agent execution and state over HTTP with per-repo managed workers.
 
 ## Endpoints
 
-- `GET /health`
-- `GET /repos`
-- `GET /state`
-- `GET /workers`
-- `POST /run/repo/{repo}`
-- `POST /stop/repo/{repo}`
+1. `GET /health`
+2. `GET /repos`
+3. `GET /state`
+4. `GET /workers`
+5. `GET /queue/{repo}`
+6. `GET /repo/{repo}/summary`
+7. `GET /policies`
+8. `GET /policy/{repo}`
+9. `POST /run/repo/{repo}`
+10. `POST /run-once/repo/{repo}`
+11. `POST /stop/repo/{repo}`
+12. `GET /` and `GET /ui` (serve dashboard HTML)
+13. `GET /ui/static/*` (dashboard assets)
 
-## Behavior
+## Worker model
 
-- Each started repo gets a dedicated background worker thread.
-- Workers execute one `run_repo_cycle_once(repo)` pass, then sleep for `SERVICE_POLL_INTERVAL_SECONDS`.
-- `state.json` remains the single runtime state source for agent decisions and history.
-- `GET /state` exposes both persisted state and in-memory worker snapshots.
+1. One background thread per started repo.
+2. Each cycle runs `main.run_repo_cycle_once(repo)`.
+3. Worker snapshots include cycle timing, error text, and cycle count.
+4. `SERVICE_POLL_INTERVAL_SECONDS` controls sleep between cycles.
 
 ## Run
 
 ```bash
+cd /home/codingai
 scripts/run_control_api.sh
 ```
 
-Optional env:
-
-- `HOST` (default `0.0.0.0`)
-- `PORT` (default `8000`)
-- `SERVICE_POLL_INTERVAL_SECONDS` (default inherits `POLL_INTERVAL`)
-
-## Dependency note
-
-Install dependencies in the agent venv:
+## Example calls
 
 ```bash
-/home/codingai/ai-agent/venv/bin/pip install -r /home/codingai/ai-agent/requirements.txt
+curl -s http://127.0.0.1:8000/health
+curl -s -X POST http://127.0.0.1:8000/run/repo/KRT-leadtool
+curl -s http://127.0.0.1:8000/repo/KRT-leadtool/summary
+curl -s -X POST http://127.0.0.1:8000/stop/repo/KRT-leadtool
 ```
+
+## Notes
+
+1. Control plane currently has no auth layer; keep deployment private.
+2. `state.json` remains the runtime persistence store.

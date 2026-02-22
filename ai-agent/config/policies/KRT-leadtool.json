@@ -1,0 +1,11 @@
+{
+  "pr": {
+    "max_per_day": 4,
+    "max_per_week": 20
+  },
+  "patch": {
+    "auto_generate_test_patches": true,
+    "max_test_patch_ops": 8,
+    "max_total_patch_ops": 35
+  }
+}

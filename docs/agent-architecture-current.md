@@ -1,79 +1,71 @@
 # Agent Architecture (Current)
 
-## High-level flow
+## Core pipeline
 
-Primary loop (`ai-agent/main.py`):
+`ai-agent/main.py` drives a per-repo cycle:
 
-1. Select repository from static list.
-2. Poll issues labeled `ai-fix`.
+1. Validate LLM readiness (`llm/provider.py`).
+2. Fetch open GitHub issues labeled `ai-fix`.
 3. For each issue:
-   - clone/update repo workspace
-   - create/reset `ai/issue-{n}` branch locally
-   - append placeholder `AI_CHANGE.txt`
-   - run adaptive test runner
-4. On success:
-   - create blob/tree/commit via GitHub Git Data API
-   - update branch ref (no force in API path)
-   - create or reuse PR
-   - persist state as passed/pr_created
-5. On failure:
-   - create failure issue
-   - persist cooldown/retry metadata in `state.json`
+   - enforce safety gates (AI Stop, manual approval, cooldown, daily PR cap),
+   - load repo policy (budgets, branch template, dry-run mode),
+   - resolve/create iteration branch naming (`ai/issue-<n>-iter-<k>`),
+   - generate structured patch ops with LLM (`llm/patch_llm.py`),
+   - apply patch locally and run adaptive tests (`core/test_runner.py`),
+   - commit via Git Data API only on pass (`github/git_api_commit.py`) unless dry-run,
+   - create/reuse PR, upsert PR report comment, optionally publish check-run.
 
-## Component map
+## Module map
 
-- Orchestration: `ai-agent/main.py`
-- Repo operations: `ai-agent/github/repo_manager.py`
-- GitHub App auth token: `ai-agent/github/app_auth.py`
-- Git Data API commit operations: `ai-agent/github/git_api_commit.py`
-- Issue and PR API calls: `ai-agent/github/issue_manager.py`, `ai-agent/github/pr_manager.py`
-- Adaptive strategy engine: `ai-agent/core/test_runner.py`
-- LLM strategy selector: `ai-agent/llm/strategy_llm.py`
-- Local config/state: `ai-agent/config/repos.yaml`, `ai-agent/state.json`, `ai-agent/.env`
+1. `main.py`
+   - orchestration, safety policy, state writes, patch/test/PR workflow.
+2. `core/test_runner.py`
+   - repo analysis, strategy execution, LLM-guided fallback, memory scoring.
+3. `core/policy.py`
+   - policy-file loading, repo override merge, normalization.
+4. `llm/provider.py`
+   - provider selection (`openai/local/auto`), health checks, failover, telemetry.
+5. `llm/strategy_llm.py`
+   - next-strategy selector with retry/backoff behavior.
+6. `llm/patch_llm.py`
+   - patch and optional test-patch generation with strict schema validation.
+7. `github/app_auth.py`
+   - GitHub App JWT + installation token lifecycle.
+8. `github/git_api_commit.py`
+   - blob/tree/commit/ref APIs, multi-file tree assembly.
+9. `github/issue_manager.py`
+   - issue polling and failure issue creation.
+10. `github/pr_manager.py`
+   - PR create/reuse, comment upsert, AI Stop detection.
+11. `github/checks_manager.py`
+    - completed check-run publication.
+12. `service/api.py`
+    - FastAPI control plane and worker manager.
+13. `service/static/index.html`
+    - web dashboard for operations and visibility.
 
-## Observed implementation details
+## State model (runtime)
 
-### GitHub App and commit identity path
+`state.json` is runtime-generated (ignored in Git). Common keys:
 
-- Installation token is generated from app JWT and cached in process memory.
-- Commit path uses GitHub Git Data API (`blobs`, `trees`, `commits`, `refs`).
-- Branch update in API path does not pass force flag.
+1. Per issue (`state[repo][issue_number]`):
+   - `active_branch`, `pr_created`, `pr_number`, `pr_url`
+   - `last_status`, `last_error`, `retry_after`
+   - `patch_ops_count`, `patch_confidence`
+   - `report_comment_id`, `check_run_url`
+   - `pending_manual_approval`
+   - `ai_stopped`, `ai_stopped_at`, `ai_stop_reason`
+2. Global/runtime:
+   - `daily_pr_counts`
+   - `strategy_memory`
+   - `pr_controls`
+   - `llm_runtime`
 
-### Local workspace behavior
+## Safety properties
 
-- Existing repo update uses `git fetch` + `git reset --hard origin/main`.
-- AI branch creation uses `git checkout -B ai/issue-{n}`.
-
-### Adaptive test behavior
-
-- Repo analysis checks markers:
-  - `docker-compose.yml`
-  - root `Dockerfile`
-  - `.csproj` / `.sln`
-  - `package.json`
-- Strategy order (deterministic first):
-  1. docker compose build
-  2. docker build
-  3. dotnet build in SDK container
-  4. dotnet build with `EnableWindowsTargeting=true`
-  5. node build in `node:20` container
-- On failure, calls OpenAI `/v1/responses` to select next strategy from remaining only.
-- Fallback behavior exists for missing API key, API errors, malformed JSON, and invalid strategy IDs.
-
-## Confirmed architecture blockers
-
-1. Import mismatch in orchestration:
-   - `main.py` imports `create_or_update_branch` from `git_api_commit.py`, but symbol is absent.
-2. Undefined function call in success path:
-   - `main.py` calls `create_branch(...)` but does not import `create_branch`.
-
-## Data/state shape currently present
-
-`state.json` contains per-repo per-issue entries such as:
-
-- `pr_created: bool`
-- `last_status: "passed" | "failed"`
-- `retry_after: unix_timestamp`
-- `last_error` (on failures)
-
-No PR comment tracking, AI stop flags, or strategy memory objects are currently present.
+1. Commit path does not use git push/force push; uses GitHub Git Data API ref updates.
+2. Remote branch is created only after local patched tests pass.
+3. AI Stop comment disables further processing for the associated issue/PR.
+4. Optional manual approval can gate all issue execution.
+5. Daily PR cap prevents unbounded PR creation.
+6. Weekly PR cap and dry-run mode are policy-controlled per repository.

@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "dry_run": false,
+  "safety": {
+    "ai_stop_phrase": "AI Stop",
+    "failure_cooldown_seconds": 21600,
+    "publish_failure_issue": true
+  },
+  "approval": {
+    "required": false,
+    "labels": ["ai-approve", "ai-approved", "manual-approval-granted"],
+    "token": "[ai-approve]"
+  },
+  "pr": {
+    "auto_update_enabled": true,
+    "max_per_day": 3,
+    "max_per_week": 15,
+    "enable_github_checks": true,
+    "check_run_name": "CodingAI Local Validation"
+  },
+  "patch": {
+    "max_patch_ops": 20,
+    "auto_generate_test_patches": false,
+    "max_test_patch_ops": 6,
+    "max_total_patch_ops": 30
+  },
+  "strategy": {
+    "switch_confidence_threshold": 0.65
+  },
+  "branch": {
+    "template": "ai/issue-{issue}-iter-{iteration}"
+  }
+}

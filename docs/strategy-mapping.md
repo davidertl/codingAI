@@ -1,69 +1,50 @@
 # Strategy Mapping
 
-## Current strategy detection logic
+Source: `ai-agent/core/test_runner.py`
 
-From `ai-agent/core/test_runner.py`:
+## Detection rules
 
-- `has_docker_compose` if `docker-compose.yml` exists at repo root.
-- `has_dockerfile_root` if `Dockerfile` exists at repo root.
-- `.NET markers`: any `.csproj` or `.sln` anywhere except `.git`/`node_modules`.
-- `Node marker`: any `package.json` anywhere except `.git`/`node_modules`.
+1. `has_docker_compose`: root `docker-compose.yml` exists.
+2. `has_dockerfile_root`: root `Dockerfile` exists.
+3. `.NET detected`: any `.csproj` or `.sln` outside `.git`/`node_modules`.
+4. `Node detected`: any `package.json` outside `.git`/`node_modules`.
 
-## Current strategy candidates and order
+## Candidate strategy set and order
 
 1. `docker_compose_build`
-2. `docker_build`
-3. `dotnet_build_docker`
-4. `dotnet_build_docker_enable_windows_targeting`
-5. `node_build_docker`
+2. `docker_compose_ephemeral_up` (only when `DOCKER_COMPOSE_EPHEMERAL_UP_ENABLED=true`)
+3. `docker_build`
+4. `dotnet_build_docker`
+5. `dotnet_build_docker_enable_windows_targeting`
+6. `node_build_docker`
 
-First attempt is deterministic (first available by this order). Subsequent attempts are LLM-guided from remaining list.
+## Selection policy
 
-## Mapping against current workspace repos
+1. First pick:
+   - Memory-biased when prior stats exist for remaining strategies.
+   - Otherwise deterministic first strategy in candidate order.
+2. On failure:
+   - LLM proposes next strategy from remaining options only.
+   - LLM switch is accepted only if confidence >= `min_confidence_for_switch`.
+   - Otherwise fallback uses memory pick, then first remaining.
+3. Per-attempt report captures:
+   - strategy id/description,
+   - pass/fail,
+   - error fingerprint.
 
-### `workspaces/KRT-leadtool`
+## Strategy memory shape
 
-Detected markers:
-- `docker-compose.yml`
-- `Dockerfile.backend`, `Dockerfile.frontend` (but no root `Dockerfile`)
-- `backend/package.json`
-- `frontend/package.json`
+Persisted under `state["strategy_memory"][repo][strategy_id]`:
 
-Expected candidate list:
-1. `docker_compose_build`
-2. `node_build_docker`
+- `runs`
+- `successes`
+- `failures`
+- `last_result`
+- `last_error_fingerprint`
+- `updated_at`
 
-Notes:
-- `docker_build` is not selected because detection expects root `Dockerfile` exactly.
+## Practical constraints
 
-### `workspaces/KRT-leadtool-test`
-
-Detected markers:
-- `docker-compose.yml`
-- `Dockerfile.backend`, `Dockerfile.frontend` (no root `Dockerfile`)
-- `backend/package.json`
-- `frontend/package.json`
-
-Expected candidate list:
-1. `docker_compose_build`
-2. `node_build_docker`
-
-### `workspaces/KRT-Com_Discord`
-
-Detected markers:
-- `.sln` and `.csproj`
-- no `docker-compose.yml`
-- no root `Dockerfile`
-- no `package.json` in scanned depth
-
-Expected candidate list:
-1. `dotnet_build_docker`
-2. `dotnet_build_docker_enable_windows_targeting`
-
-## Edge cases / constraints
-
-- Multi-service Docker repos with non-root Dockerfiles are under-detected for `docker_build`.
-- Multi-package Node repos only build first discovered `package.json` path.
-- Multi-project .NET repos only build first discovered `.csproj` path.
-- No persisted strategy scoring memory; each run starts fresh.
-- No confidence threshold enforcement beyond returning clamped confidence value.
+1. `docker_build` only triggers for root `Dockerfile`.
+2. Node and .NET flows currently build first discovered project file path.
+3. Error text sent to LLM is trimmed to relevant lines to reduce prompt noise.
