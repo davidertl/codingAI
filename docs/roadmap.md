@@ -1,5 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.0
+Version: 1.3.1
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
@@ -36,6 +36,11 @@ Version: 1.3.0
 ## Phase 14 – Projects (Repo Discovery)
 - List GitHub App installation repos; enable/disable per repo.
 - Persist projects: push gate mode (10s auto vs manual approve), labels to watch, policy reference.
+
+Pre-Phase 15 checklist (new)
+- Harden setup/projects UX: preload saved owner/app/installation IDs in UI once env read API is added.
+- Persist projects to durable DB (SQLite) instead of `state.json`; include labels/policy template per repo.
+- Add “push gate mode” selector in UI and map to policy file override.
 
 ## Phase 13 – Setup & Installer (Local)
 - Docker Compose stack: api/ui, optional searxng, sqlite volume, secrets volume, workspaces.

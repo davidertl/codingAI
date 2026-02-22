@@ -1,5 +1,5 @@
 # Agent Architecture (Current)
-Version: 1.1.0
+Version: 1.2.0
 
 ## Core pipeline (current)
 
@@ -13,7 +13,7 @@ Version: 1.1.0
 
 ## Module map (current)
 
-- `paths.py`: resolves repo root, logs, state, env, pem, workspaces; removes hardcoded `/home`.
+- `paths.py`: resolves repo root, logs, state, env, pem, workspaces; removes hardcoded `/home`; exposes `setup_status()` and central PEM/env paths for setup UI.
 - `core/policy.py`: env + policy files merge/normalize; per-repo overrides.
 - `core/test_runner.py`: repo analysis; docker/dotnet/node strategies; LLM-guided strategy switching; strategy memory/quarantine; error extraction.
 - `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`.
@@ -26,8 +26,10 @@ Version: 1.1.0
 - `github/pr_manager.py`: PR create/reuse, AI Stop detection, comment upsert.
 - `github/checks_manager.py`: GitHub Checks API publish.
 - `github/ci_status.py`: combined status + check-runs for CI gate.
-- `github/repo_manager.py`: clone/update workspaces with docker-safe guard.
-- `service/api.py`: FastAPI control plane, workers, metrics/events/CI endpoints, serves dashboard (`service/static/index.html`).
+- `github/repo_manager.py`: clone/update workspaces with docker-safe guard; lists installation repos for projects UI.
+- `service/api.py`: FastAPI control plane, workers, metrics/events/CI endpoints, setup endpoints (`/setup/status`, `/setup/github`, `/setup/pem`), projects enable/disable (`/projects*`), serves dashboard (`service/static/index.html`).
+- `service/static/index.html`: Dashboard wiring for setup status/PEM upload, installation repo list with enable/disable, worker controls, queue/tracked issue views.
+- `docker-compose.yaml`: binds `.env` and `github_app/` into the service container read-write to support setup UI writes.
 
 ## State model (runtime, JSON)
 

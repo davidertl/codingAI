@@ -1,9 +1,9 @@
 # Current State
-Version: 1.2.0
+Version: 1.3.0
 
 This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
 
-## Phase status (1-12)
+## Phase status (1-14)
 
 1. `Phase 1 - Real patch generation`: Implemented  
    - LLM patch ops (`llm/patch_llm.py`)  
@@ -45,6 +45,13 @@ This reflects the verified code/runtime state for `ai-agent/` on branch `localst
    - Strategy memory decay + quarantine (`core/test_runner.py`)  
    - Policy-driven autonomy knobs (`core/policy.py`, `config/policies/default.json`)  
    - Staged test-patch fallback with confidence gating (`main.py`)
+13. `Phase 13 - Setup & installer`: Implemented  
+   - Interactive installer writes `.env` and bootstraps deps (`scripts/install_codingai.sh`)  
+   - Setup endpoints for GitHub App IDs and PEM (`/setup/github`, `/setup/pem`, `/setup/status`)
+14. `Phase 14 - Projects (repo discovery)`: Implemented  
+   - GitHub installation repo listing (`github/repo_manager.py::list_installation_repos`)  
+   - Enable/disable per repo persisted in state (`/projects`, `/projects/{repo}/enable|disable`)  
+   - UI surfaced in dashboard left column (Projects + Setup cards)
 
 ## Revalidation evidence (2026-02-22 UTC)
 

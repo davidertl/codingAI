@@ -160,6 +160,24 @@
       border-color: rgba(100, 204, 180, 0.7);
     }
 
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(10, 25, 32, 0.9);
+      color: var(--text);
+      font-size: 0.82rem;
+    }
+
+    label { color: var(--muted); font-size: 0.8rem; }
+
+    .form-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+
     .content {
       display: grid;
       grid-template-rows: auto auto 1fr;
@@ -318,7 +336,52 @@
           </div>
         </div>
       </div>
-      <div class="stack" id="repoList"></div>
+      <div class="stack">
+        <section class="box">
+          <div class="hd2">
+            <strong>Setup</strong>
+            <span class="chip" id="setupStatus">-</span>
+          </div>
+          <div class="mono" id="setupMeta">Owner/App/Install/Pem status</div>
+          <form class="stack" id="setupGithubForm">
+            <div class="form-grid">
+              <div>
+                <label for="ghOwner">GitHub Owner</label>
+                <input id="ghOwner" name="owner" placeholder="owner" autocomplete="off" required>
+              </div>
+              <div>
+                <label for="ghAppId">App ID</label>
+                <input id="ghAppId" name="app_id" placeholder="app id" autocomplete="off" required>
+              </div>
+              <div>
+                <label for="ghInstallationId">Installation ID</label>
+                <input id="ghInstallationId" name="installation_id" placeholder="installation id" autocomplete="off" required>
+              </div>
+            </div>
+            <div class="row">
+              <button type="submit" class="primary">Save GitHub IDs</button>
+            </div>
+          </form>
+          <form class="stack" id="setupPemForm" enctype="multipart/form-data">
+            <label for="pemFile">GitHub App PEM</label>
+            <div class="row">
+              <input id="pemFile" name="pem" type="file" accept=".pem" required>
+              <button type="submit">Upload PEM</button>
+            </div>
+            <div class="mono" id="pemStatus">pem not uploaded</div>
+          </form>
+        </section>
+
+        <section class="box">
+          <div class="hd2">
+            <strong>Projects</strong>
+            <span class="mono" id="projectsMeta">-</span>
+          </div>
+          <div id="projectsList"></div>
+        </section>
+
+        <div class="stack" id="repoList"></div>
+      </div>
     </section>
 
     <section class="panel">
@@ -368,6 +431,8 @@
       selectedRepo: null,
       health: null,
       summary: null,
+      setup: null,
+      projects: [],
       refreshTimer: null,
     };
 
@@ -391,6 +456,16 @@
       btnStopWorker: document.getElementById("btnStopWorker"),
       btnRefresh: document.getElementById("btnRefresh"),
       toast: document.getElementById("toast"),
+      setupStatus: document.getElementById("setupStatus"),
+      setupMeta: document.getElementById("setupMeta"),
+      pemStatus: document.getElementById("pemStatus"),
+      setupGithubForm: document.getElementById("setupGithubForm"),
+      setupPemForm: document.getElementById("setupPemForm"),
+      ghOwner: document.getElementById("ghOwner"),
+      ghAppId: document.getElementById("ghAppId"),
+      ghInstallationId: document.getElementById("ghInstallationId"),
+      projectsMeta: document.getElementById("projectsMeta"),
+      projectsList: document.getElementById("projectsList"),
     };
 
     async function fetchJson(path, opts = {}) {
@@ -445,6 +520,42 @@
       el.providerName.textContent = h.llm_active_provider || "-";
       el.serverTime.textContent = h.time_utc || "-";
       el.workersCount.textContent = String(h.workers_running ?? 0);
+    }
+
+    function renderSetup() {
+      const s = state.setup || {};
+      const ok = s.setup_complete;
+      el.setupStatus.className = ok ? "chip ok" : "chip warn";
+      el.setupStatus.textContent = ok ? "READY" : "INCOMPLETE";
+      el.setupMeta.textContent = `owner=${s.has_owner ? "✓" : "×"} app=${s.has_app_id ? "✓" : "×"} install=${s.has_installation_id ? "✓" : "×"} pem=${s.pem_exists ? "✓" : "×"}`;
+      el.pemStatus.textContent = s.pem_exists ? "PEM present (0600)" : "PEM missing";
+    }
+
+    function renderProjects() {
+      const items = state.projects || [];
+      el.projectsMeta.textContent = `${items.length} repos`;
+      if (!items.length) {
+        el.projectsList.innerHTML = `<div class="msg">No installation repositories visible. Ensure GitHub App credentials are set and PEM uploaded.</div>`;
+        return;
+      }
+      el.projectsList.innerHTML = items
+        .map((p) => {
+          const cls = p.enabled ? "chip ok" : "chip";
+          const action = p.enabled ? "disable" : "enable";
+          const label = p.enabled ? "Disable" : "Enable";
+          return `
+            <article class="repo">
+              <div class="name">
+                <span>${p.repo}</span>
+                <span class="${cls}">${p.enabled ? "enabled" : "disabled"}</span>
+              </div>
+              <div class="row">
+                <button data-project="${p.repo}" data-action="${action}">${label}</button>
+              </div>
+            </article>
+          `;
+        })
+        .join("");
     }
 
     function renderQueue(summary) {
@@ -553,6 +664,17 @@
       renderRepos();
     }
 
+    async function refreshSetup() {
+      state.setup = await fetchJson("/setup/status");
+      renderSetup();
+    }
+
+    async function refreshProjects() {
+      const data = await fetchJson("/projects");
+      state.projects = data.projects || [];
+      renderProjects();
+    }
+
     async function refreshSummary() {
       if (!state.selectedRepo) return;
       el.selectedRepoTitle.textContent = `Repository: ${state.selectedRepo}`;
@@ -566,6 +688,8 @@
       try {
         await refreshCore();
         await refreshSummary();
+        await refreshProjects();
+        await refreshSetup();
       } catch (e) {
         showToast(`refresh failed: ${e.message}`, true);
       }
@@ -612,6 +736,46 @@
     });
 
     el.btnRefresh.addEventListener("click", refreshAll);
+
+    el.setupGithubForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        const fd = new FormData(ev.target);
+        await fetchJson("/setup/github", { method: "POST", body: fd });
+        showToast("GitHub IDs saved");
+        await refreshSetup();
+      } catch (e) {
+        showToast(`setup save failed: ${e.message}`, true);
+      }
+    });
+
+    el.setupPemForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        const fd = new FormData(ev.target);
+        await fetchJson("/setup/pem", { method: "POST", body: fd });
+        showToast("PEM uploaded");
+        ev.target.reset();
+        await refreshSetup();
+      } catch (e) {
+        showToast(`pem upload failed: ${e.message}`, true);
+      }
+    });
+
+    el.projectsList.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const repo = btn.dataset.project;
+      const action = btn.dataset.action;
+      if (!repo || !action) return;
+      try {
+        await fetchJson(`/projects/${encodeURIComponent(repo)}/${action}`, { method: "POST" });
+        showToast(`project ${action}d: ${repo}`);
+        await refreshProjects();
+      } catch (e) {
+        showToast(`project toggle failed: ${e.message}`, true);
+      }
+    });
 
     async function boot() {
       await refreshAll();

@@ -1,5 +1,5 @@
 # Installation (Fresh Debian CLI)
-Version: 1.1.0
+Version: 1.2.0
 
 This is a minimal, interactive install path for a brand new Debian server (no GUI).
 
@@ -12,6 +12,7 @@ The installer (`scripts/install_codingai.sh`) installs:
 5. Docker engine + Compose plugin
 6. Creates `ai-agent/venv` and installs Python deps
 7. Writes `ai-agent/.env` interactively (GitHub App IDs, OpenAI key optional, local LLM URL/model)
+8. Prepares secrets volume mount points (`ai-agent/.env`, `ai-agent/github_app/*.pem`) with restrictive permissions
 
 ## Option A (recommended): clone into a folder
 
@@ -39,6 +40,12 @@ cp -a scripts/install_codingai.sh ~/scripts/
 
 bash ~/scripts/install_codingai.sh
 ```
+
+## Secrets & permissions (compose)
+
+- `.env` is bind-mounted into the container; keep it at `ai-agent/.env` (or set `CODINGAI_ENV_FILE`) with `chmod 600`.
+- GitHub App private key is stored under `ai-agent/github_app/` (default `KRT-AI-Agent.pem`) and bind-mounted; ensure the folder exists and `chmod 700 ai-agent/github_app && chmod 600 ai-agent/github_app/*.pem`.
+- If you run Docker as non-root, keep ownership consistent so the container can read the files (same UID/GID as the host user running `docker compose`).
 
 ## Required manual step: GitHub App private key
 

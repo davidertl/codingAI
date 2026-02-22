@@ -1,5 +1,5 @@
 # Operations Runbook
-Version: 1.1.0
+Version: 1.2.0
 
 ## Prerequisites
 
@@ -7,6 +7,7 @@ Version: 1.1.0
 2. Docker + Docker Compose
 3. Valid GitHub App credentials in `ai-agent/.env` and `ai-agent/github_app/*.pem`
 4. Network access to GitHub API (and OpenAI/local LLM as configured)
+5. Secrets readable by container user (see Secrets section)
 
 ## Install dependencies
 
@@ -30,6 +31,13 @@ It will:
 2. create `ai-agent/venv` and install Python deps
 3. write `ai-agent/.env` interactively
 4. remind you to copy the GitHub App `.pem` into `ai-agent/github_app/`
+
+## Secrets & volumes
+
+- Ensure `ai-agent/.env` exists with `chmod 600`; it is bind-mounted into the container.
+- Ensure `ai-agent/github_app/` exists and the private key inside has `chmod 600`; directory can be `chmod 700`.
+- Compose already mounts both locations read-write so the UI `/setup/*` endpoints can write them; if you override paths with env vars, update `docker-compose.yaml` accordingly.
+- Never paste the PEM contents into logs; use the UI upload or copy the file onto disk with correct permissions.
 
 ## Revalidation checklist
 
