@@ -1,5 +1,5 @@
 # Installation (Fresh Debian CLI)
-Version: 1.2.0
+Version: 1.3.0
 
 This is a minimal, interactive install path for a brand new Debian server (no GUI).
 

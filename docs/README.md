@@ -11,19 +11,20 @@ This folder documents the current implementation state and operating model of Co
 2. `operations-runbook.md` for install/run/troubleshooting and revalidation checks.
 3. `agent-architecture-current.md` for module and control-flow map.
 4. `installation.md` for fresh Debian CLI install steps.
+5. `roadmap.md` for phase progression (1–21 implemented; 22+ planned).
 
 ## Validation snapshot
 
 This docs refresh is based on live checks run against current code:
 
-1. Import/compile sanity passed in venv (`main`, `service.api`, `compileall`).
-2. API smoke checks passed (`/health`, `/repos`, `/policies`, `/repo/KRT-leadtool/summary`).
+1. Import/compile sanity passed (`python3 -m compileall -q ai-agent`).
+2. API smoke: `/health`, `/repos`, `/policies`, `/repo/<repo>/summary`, `/research`.
 3. Policy loading resolves from `ai-agent/config/policies` with no parse errors.
-4. Local LLM endpoint `127.0.0.1:11434` is currently not reachable; fallback path to OpenAI is functional.
+4. Local LLM endpoint status: not probed here; provider chain will fall back to OpenAI if configured.
 
 ## Index
 
-- `current-state.md`: implementation status by phase (1-12), known gaps, and observed runtime status.
+- `current-state.md`: implementation status by phase (1-21), known gaps, and observed runtime status.
 - `agent-architecture-current.md`: end-to-end control flow and module map.
 - `strategy-mapping.md`: adaptive test strategy detection and selection behavior.
 - `operations-runbook.md`: operational procedures and API/runtime checks.
