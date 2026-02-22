@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 
 from core.test_runner import analyze_repo, run_tests
 from github.git_api_commit import (
@@ -14,7 +15,7 @@ from github.git_api_commit import (
     update_branch,
 )
 from github.issue_manager import create_issue, get_ai_issues
-from github.pr_manager import create_or_get_pr
+from github.pr_manager import create_or_get_pr, upsert_pr_comment
 from github.repo_manager import clone_or_update
 from llm.patch_llm import propose_patch_ops
 
@@ -27,6 +28,7 @@ STATE_FILE = "/home/codingai/ai-agent/state.json"
 POLL_INTERVAL = 300
 FAIL_COOLDOWN_SECONDS = 6 * 60 * 60  # 6h
 MAX_PATCH_OPS = 20
+REPORT_MARKER = "<!-- codingai-test-report -->"
 
 
 def load_state():
@@ -133,6 +135,52 @@ def _local_repo_has_changes(repo_path):
     return bool(r.stdout.strip())
 
 
+def _build_pr_test_comment(issue_number, test_report, test_output, patch_result, patch_ops_count):
+    attempts = test_report.get("attempts", [])
+    if attempts:
+        attempt_lines = []
+        for a in attempts:
+            icon = "✅" if a.get("result") == "passed" else "❌"
+            fp = a.get("error_fingerprint")
+            fp_text = f" (fingerprint: `{fp}`)" if fp else ""
+            attempt_lines.append(
+                f"- {icon} Attempt {a.get('attempt')}: `{a.get('strategy_id')}` - {a.get('result')}{fp_text}"
+            )
+        attempts_md = "\n".join(attempt_lines)
+    else:
+        attempts_md = "- No attempts recorded"
+
+    selected_strategy = test_report.get("selected_strategy") or "n/a"
+    selected_reason = test_report.get("selected_strategy_reason") or "n/a"
+    selected_conf = float(test_report.get("selected_strategy_confidence", 0.0))
+    patch_conf = float(patch_result.get("confidence", 0.0))
+
+    result = str(test_report.get("result", "failed")).upper()
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    out = (test_output or "").strip()
+    out = out[:1800] if out else "No output captured."
+
+    return (
+        f"{REPORT_MARKER}\n"
+        "## CodingAI Test Report\n\n"
+        f"- Issue: `#{issue_number}`\n"
+        f"- Generated (UTC): `{now_utc}`\n"
+        f"- Result: **{result}**\n"
+        f"- Patch operations: `{patch_ops_count}`\n"
+        f"- Patch confidence: `{patch_conf:.2f}`\n\n"
+        "### Strategy Attempts\n"
+        f"{attempts_md}\n\n"
+        "### Selected Strategy\n"
+        f"- Strategy: `{selected_strategy}`\n"
+        f"- Confidence: `{selected_conf:.2f}`\n"
+        f"- Reason: {selected_reason}\n\n"
+        "### Last Test Output (truncated)\n"
+        "```text\n"
+        f"{out}\n"
+        "```\n"
+    )
+
+
 def process_issue(repo, issue, state):
     number = str(issue["number"])
 
@@ -199,7 +247,7 @@ def process_issue(repo, issue, state):
             return
 
         print("Patch applied locally. Running tests on patched repository...")
-        success, output = run_tests(repo_path, repo_name=repo, max_attempts=3)
+        success, output, test_report = run_tests(repo_path, repo_name=repo, max_attempts=3)
 
         if not success:
             _register_failure(
@@ -230,14 +278,43 @@ def process_issue(repo, issue, state):
 
         update_branch(repo, branch, commit_sha)
 
-        pr_url = create_or_get_pr(repo, branch, int(number))
-        print("PR URL:", pr_url)
+        pr_info = create_or_get_pr(repo, branch, int(number))
+        if not pr_info:
+            _register_failure(
+                state,
+                repo,
+                number,
+                f"PR creation failed for issue #{number}.",
+                "Commit was created and branch updated, but PR creation returned no result.",
+            )
+            return
+
+        print("PR URL:", pr_info["url"])
+
+        comment_body = _build_pr_test_comment(
+            issue_number=number,
+            test_report=test_report,
+            test_output=output,
+            patch_result=patch_result,
+            patch_ops_count=len(patch_ops),
+        )
+        comment_result = upsert_pr_comment(
+            repo,
+            pr_info["number"],
+            comment_body,
+            marker=REPORT_MARKER,
+        )
+        action = "updated" if comment_result.get("updated") else "created"
+        print(f"PR report comment {action}: {comment_result.get('url')}")
 
         state[repo][number] = {
             "pr_created": True,
             "last_status": "passed",
             "patch_ops_count": len(patch_ops),
             "patch_confidence": patch_result.get("confidence", 0.0),
+            "pr_number": pr_info["number"],
+            "pr_url": pr_info["url"],
+            "report_comment_id": comment_result.get("id"),
             "retry_after": 0,
         }
         save_state(state)

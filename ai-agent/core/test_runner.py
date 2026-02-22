@@ -170,8 +170,18 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
     - run one
     - if fail, ask LLM which remaining strategy to try next based on error
     - hard cap attempts
+
+    Returns:
+      (success, output, report)
     """
     repo_analysis = analyze_repo(repo_path)
+    report = {
+        "result": "failed",
+        "attempts": [],
+        "selected_strategy": None,
+        "selected_strategy_confidence": 0.0,
+        "selected_strategy_reason": "",
+    }
 
     # Build candidate strategy list based on what we actually found
     strategies = []
@@ -187,7 +197,9 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
         strategies.append({"id": "node_build_docker", "desc": "node build in node:20 container", "kind": "container"})
 
     if not strategies:
-        return False, "No supported test strategy found (repo scan found no docker/dotnet/node markers)."
+        out = "No supported test strategy found (repo scan found no docker/dotnet/node markers)."
+        report["final_error_fingerprint"] = _fingerprint(out)
+        return False, out, report
 
     attempted = []
     last_error = ""
@@ -195,6 +207,8 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
     # Deterministic first pick: docker compose > dockerfile > dotnet > node (based on list order above)
     remaining = strategies[:]
     current = remaining.pop(0)
+    last_selection_reason = "Deterministic first strategy selection."
+    last_selection_confidence = 0.0
 
     for attempt in range(1, max_attempts + 1):
         attempted.append(current["id"])
@@ -215,8 +229,21 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
 
         print(out)
 
+        attempt_entry = {
+            "attempt": attempt,
+            "strategy_id": current["id"],
+            "strategy_desc": current["desc"],
+            "result": "passed" if ok else "failed",
+            "error_fingerprint": None if ok else _fingerprint(out),
+        }
+        report["attempts"].append(attempt_entry)
+
         if ok:
-            return True, out
+            report["result"] = "passed"
+            report["selected_strategy"] = current["id"]
+            report["selected_strategy_confidence"] = last_selection_confidence
+            report["selected_strategy_reason"] = last_selection_reason
+            return True, out, report
 
         last_error = out or "Unknown failure."
 
@@ -239,8 +266,21 @@ def run_tests(repo_path: str, repo_name: str, max_attempts: int = 3):
         idx = next((i for i, s in enumerate(remaining) if s["id"] == chosen_id), None)
         if idx is None:
             current = remaining.pop(0)
+            last_selection_reason = "Fallback to first remaining strategy."
+            last_selection_confidence = 0.0
         else:
             current = remaining.pop(idx)
+            last_selection_reason = str(decision.get("reason", ""))[:500]
+            try:
+                last_selection_confidence = float(decision.get("confidence", 0.0))
+            except Exception:
+                last_selection_confidence = 0.0
 
     # Return failure with fingerprint for state tracking
-    return False, f"[fail:{_fingerprint(last_error)}]\n{last_error}"
+    failure = f"[fail:{_fingerprint(last_error)}]\n{last_error}"
+    report["result"] = "failed"
+    report["selected_strategy"] = report["attempts"][-1]["strategy_id"] if report["attempts"] else None
+    report["selected_strategy_confidence"] = last_selection_confidence
+    report["selected_strategy_reason"] = last_selection_reason
+    report["final_error_fingerprint"] = _fingerprint(last_error)
+    return False, failure, report
