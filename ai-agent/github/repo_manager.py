@@ -39,17 +39,6 @@ def clone_or_update(repo_name):
     return repo_path
 
 
-def create_ai_branch(repo_path, issue_number):
-    branch_name = f"ai/issue-{issue_number}"
-    _run(["git", "checkout", "-B", branch_name], cwd=repo_path)
-    return branch_name
-
-
-def commit_all(repo_path, message):
-    _run(["git", "add", "."], cwd=repo_path)
-    _run(["git", "commit", "-m", message], cwd=repo_path, check=False)
-
-
 def push_branch(repo_path, branch):
     raise RuntimeError(
         "Direct git push is disabled for safety. "
