@@ -1,9 +1,25 @@
-# CodingAI Roadmap (Phases 13–21, Local-Only VM)
+# CodingAI Roadmap (Phases 1–21, Local-Only VM)
 
-## Current baseline (Phase 1–12)
-- Patch pipeline with GitHub App commits/PRs, AI Stop, policy governance (budgets/dry-run/CI gate), observability, adaptive test runner, Web UI dashboard.
-- Single-user/trusted VM, state.json + logs; Docker strategies for builds/tests.
-- Local LLM ready; API models optional.
+## Baseline (Phases 1–12)
+- Phase 1: Structured patch ops (LLM), local apply, Git Data API multi-file commit.
+- Phase 2: PR comment automation with marker upsert.
+- Phase 3: AI Stop via PR comments; state lockout.
+- Phase 4: LLM stability (429/5xx backoff, error trimming, confidence-gated strategy switching).
+- Phase 5: Safe autonomy (manual approval, branch iteration, PR caps, dry-run).
+- Phase 6: Advanced tests (optional test-patch ops, compose ephemeral runs, Checks API).
+- Phase 7: Local LLM operationalization (health checks, fallback, telemetry).
+- Phase 8: FastAPI control plane + worker manager.
+- Phase 9: Web UI dashboard (issues/PR/test signals).
+- Phase 10: Governance/budgets/dry-run
+  - Policy files `ai-agent/config/policies/{default,repo}.json`; env overrides.
+  - Sections: enabled/dry_run/safety/approval/pr/patch/strategy/branch.
+  - Daily/weekly PR caps (`state.json` counts); dry-run skips all GitHub writes.
+  - API: `/policies`, `/policy/{repo}`, `/repo/{repo}/summary` shows policy/budget.
+- Phase 11: Observability + CI gate
+  - Event log JSONL; counters/gauges/summaries; `/metrics`, `/metrics/json`, `/events`.
+  - CI gate via `ci_status`: require_green_before_update, block_on_pending/failed, allowed conclusions, on_error.
+  - API: `/ci/{repo}/{pr_number}`, summaries in `/repo/{repo}/summary`.
+- Phase 12: Autonomy improvements (strategy memory decay/quarantine, staged test-patch fallback, policy knobs).
 
 ## Phase 13 – Setup & Installer (Local)
 - Docker Compose stack: api/ui, searxng (optional), sqlite volume, secrets volume, workspaces.

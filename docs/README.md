@@ -31,7 +31,5 @@ This docs refresh is based on live checks run against current code:
 - `local-llm-setup.md`: local model setup, fallback behavior, and telemetry controls.
 - `phase8-api-control-plane.md`: FastAPI control plane endpoints and examples.
 - `phase9-web-ui-mvp.md`: dashboard usage and controls.
-- `phase10-governance-safety.md`: policy files, budgets, and dry-run behavior.
-- `phase11-observability-ci.md`: structured events, metrics, and CI gate integration.
 - `phase12-advanced-autonomy.md`: strategy-memory autonomy and staged test-patch fallback.
-- `phase7plus-roadmap.md`: candidate phases beyond Phase 12.
+- `roadmap.md`: phases 1–21 (current and future, includes governance/observability).
