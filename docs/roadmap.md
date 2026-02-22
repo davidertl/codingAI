@@ -1,5 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.3
+Version: 1.3.4
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
@@ -18,6 +18,7 @@ Version: 1.3.3
 - SearxNG service; research cache (query/results/summary TTL).
 - Summaries via local LLM; optional API fallback toggle.
 
+Status: Implemented (SearxNG-backed search with cache + LLM summary; `/research` API).
 ## Phase 17 – Containerized Execution
 - Layout: `repos/` mirrors, `jobs/<id>/` worktrees with TTL cleanup.
 - Docker via host socket (trusted single-user); optional cgroup caps/rootless.

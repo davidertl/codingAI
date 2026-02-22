@@ -1,5 +1,5 @@
 # Agent Architecture (Current)
-Version: 1.4.0
+Version: 1.5.0
 
 ## Core pipeline (current)
 
@@ -16,6 +16,7 @@ Version: 1.4.0
 - `paths.py`: resolves repo root, logs, state, env, pem, workspaces; removes hardcoded `/home`; exposes `setup_status()` and central PEM/env paths for setup UI.
 - `core/policy.py`: env + policy files merge/normalize; per-repo overrides.
 - `core/test_runner.py`: repo analysis; docker/dotnet/node strategies; LLM-guided strategy switching; strategy memory/quarantine; error extraction.
+- `core/research.py`: SearxNG-backed search with TTL cache and optional LLM summary.
 - `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`.
 - `llm/provider.py`: provider chain (openai/local/auto), health checks, failover, telemetry; resolves env from `paths.ENV_FILE`.
 - `llm/patch_llm.py`: patch + optional test-patch generation with schema validation.

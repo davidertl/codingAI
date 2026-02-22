@@ -1,9 +1,9 @@
 # Current State
-Version: 1.5.0
+Version: 1.6.0
 
 This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
 
-## Phase status (1-17)
+## Phase status (1-18)
 
 1. `Phase 1 - Real patch generation`: Implemented  
    - LLM patch ops (`llm/patch_llm.py`)  
@@ -61,6 +61,10 @@ This reflects the verified code/runtime state for `ai-agent/` on branch `localst
    - Shared repo mirrors under `workspaces/repos/`; per-job worktrees under `workspaces/jobs/{repo}/{job_id}` via `prepare_job_worktree`  
    - Base SHA fetched from GitHub, worktree created at that commit before patch/test  
    - TTL cleanup of old job dirs (`CODINGAI_JOB_TTL_SECONDS`, default 24h; max jobs per repo 12)
+18. `Phase 18 - Research (local-first)`: Implemented  
+   - SearxNG-backed search via `core/research.py` with cache (`logs/research_cache.json`, TTL env-configurable)  
+   - Optional LLM summarization using configured provider/model; telemetry recorded  
+   - API: `GET /research?query=...` returning results/summary/cache metadata
 
 ## Revalidation evidence (2026-02-22 UTC)
 

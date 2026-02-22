@@ -16,6 +16,7 @@ from core.observability import (
     render_prometheus_metrics,
     set_gauge,
 )
+from core.research import research
 import main
 from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
@@ -443,6 +444,25 @@ def pipeline_resume(repo: str, issue_number: int):
 def pipeline_cancel(repo: str, issue_number: int, reason: str | None = None):
     _require_repo(repo)
     return _pipeline_control(repo, issue_number, action="cancel", reason=reason)
+
+
+@app.get("/research")
+def research_query(query: str, max_results: int | None = None, use_cache: bool = True):
+    if not query or not query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        data = research(query.strip(), max_results=max_results, use_cache=use_cache)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:400])
+    return {
+        "time_utc": _utc_now_iso(),
+        "query": data.get("query"),
+        "cached": data.get("cached", False),
+        "results": data.get("results", []),
+        "summary": data.get("summary", ""),
+        "search_error": data.get("search_error"),
+        "summary_error": data.get("summary_error"),
+    }
 
 
 @app.get("/metrics/json")
