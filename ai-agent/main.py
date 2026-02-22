@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from core.test_runner import analyze_repo, run_tests
+from github.checks_manager import create_completed_check_run
 from github.git_api_commit import (
     build_tree_from_patchops,
     create_branch,
@@ -22,17 +23,23 @@ from github.pr_manager import (
     upsert_pr_comment,
 )
 from github.repo_manager import clone_or_update
-from llm.patch_llm import propose_patch_ops
+from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
 
 AVAILABLE_REPOS = [
     "KRT-leadtool",
     "KRT-Com_Discord",
 ]
+TARGET_REPOS_ENV = os.getenv("TARGET_REPOS", "").strip()
+if TARGET_REPOS_ENV:
+    AVAILABLE_REPOS = [r.strip() for r in TARGET_REPOS_ENV.split(",") if r.strip()]
 
 STATE_FILE = "/home/codingai/ai-agent/state.json"
 POLL_INTERVAL = 300
 FAIL_COOLDOWN_SECONDS = 6 * 60 * 60  # 6h
 MAX_PATCH_OPS = 20
+MAX_TEST_PATCH_OPS = int(os.getenv("MAX_TEST_PATCH_OPS", "6"))
+MAX_TOTAL_PATCH_OPS = int(os.getenv("MAX_TOTAL_PATCH_OPS", "30"))
+AUTO_GENERATE_TEST_PATCHES = os.getenv("AUTO_GENERATE_TEST_PATCHES", "false").strip().lower() in {"1", "true", "yes", "on"}
 REPORT_MARKER = "<!-- codingai-test-report -->"
 AI_STOP_PHRASE = "AI Stop"
 STRATEGY_SWITCH_CONFIDENCE_THRESHOLD = float(os.getenv("STRATEGY_SWITCH_CONFIDENCE_THRESHOLD", "0.65"))
@@ -45,6 +52,9 @@ MANUAL_APPROVAL_LABELS = {
     if s.strip()
 }
 MANUAL_APPROVAL_TOKEN = os.getenv("MANUAL_APPROVAL_TOKEN", "[ai-approve]").strip().lower()
+ENABLE_GITHUB_CHECKS = os.getenv("ENABLE_GITHUB_CHECKS", "true").strip().lower() in {"1", "true", "yes", "on"}
+CHECK_RUN_NAME = os.getenv("CHECK_RUN_NAME", "CodingAI Local Validation")
+RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_state():
@@ -60,11 +70,18 @@ def save_state(state):
 
 
 def choose_repo():
+    if RUN_ALL_REPOS:
+        return "__all__"
+
     print("Select repository to work on:")
     for idx, repo in enumerate(AVAILABLE_REPOS):
         print(f"{idx + 1}. {repo}")
+    print("a. all repositories")
 
-    choice = input("Enter number: ").strip()
+    choice = input("Enter number: ").strip().lower()
+
+    if choice in {"a", "all", "*"}:
+        return "__all__"
 
     if not choice.isdigit():
         print("Invalid selection (not a number).")
@@ -94,11 +111,14 @@ def _register_failure(state, repo, number, summary, details):
     details = (details or "").strip()
     details = details[:12000]
 
-    create_issue(
-        repo,
-        f"AI Failure for Issue #{number}",
-        f"{summary}\n\n```\n{details}\n```",
-    )
+    try:
+        create_issue(
+            repo,
+            f"AI Failure for Issue #{number}",
+            f"{summary}\n\n```\n{details}\n```",
+        )
+    except Exception as e:
+        print(f"Failed to publish failure issue for {repo}#{number}: {e}")
 
     issue_state = _get_issue_state(state, repo, number)
     issue_state["pr_created"] = bool(issue_state.get("pr_created", False))
@@ -288,6 +308,24 @@ def _local_repo_has_changes(repo_path):
     return bool(r.stdout.strip())
 
 
+def _merge_patch_ops(base_ops, extra_ops, *, max_ops):
+    merged = list(base_ops)
+    seen_paths = {op["path"] for op in merged}
+    added = 0
+
+    for op in extra_ops:
+        if len(merged) >= max_ops:
+            break
+        path = op["path"]
+        if path in seen_paths:
+            continue
+        merged.append(op)
+        seen_paths.add(path)
+        added += 1
+
+    return merged, added
+
+
 def _build_pr_test_comment(issue_number, test_report, test_output, patch_result, patch_ops_count):
     attempts = test_report.get("attempts", [])
     if attempts:
@@ -307,6 +345,7 @@ def _build_pr_test_comment(issue_number, test_report, test_output, patch_result,
     selected_reason = test_report.get("selected_strategy_reason") or "n/a"
     selected_conf = float(test_report.get("selected_strategy_confidence", 0.0))
     patch_conf = float(patch_result.get("confidence", 0.0))
+    test_patch_ops_added = int(patch_result.get("test_patch_ops_added", 0))
 
     result = str(test_report.get("result", "failed")).upper()
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
@@ -320,7 +359,8 @@ def _build_pr_test_comment(issue_number, test_report, test_output, patch_result,
         f"- Generated (UTC): `{now_utc}`\n"
         f"- Result: **{result}**\n"
         f"- Patch operations: `{patch_ops_count}`\n"
-        f"- Patch confidence: `{patch_conf:.2f}`\n\n"
+        f"- Patch confidence: `{patch_conf:.2f}`\n"
+        f"- Auto-generated test patch ops: `{test_patch_ops_added}`\n\n"
         "### Strategy Attempts\n"
         f"{attempts_md}\n\n"
         "### Selected Strategy\n"
@@ -332,6 +372,40 @@ def _build_pr_test_comment(issue_number, test_report, test_output, patch_result,
         f"{out}\n"
         "```\n"
     )
+
+
+def _build_check_run_output(issue_number, test_report, test_output, patch_result, patch_ops_count):
+    attempts = test_report.get("attempts", [])
+    attempts_text = []
+    for a in attempts:
+        attempts_text.append(
+            f"- attempt {a.get('attempt')}: {a.get('strategy_id')} -> {a.get('result')} "
+            f"({a.get('error_fingerprint') or 'ok'})"
+        )
+    attempts_block = "\n".join(attempts_text) if attempts_text else "- no attempts recorded"
+
+    selected = test_report.get("selected_strategy") or "n/a"
+    selected_conf = float(test_report.get("selected_strategy_confidence", 0.0))
+    patch_conf = float(patch_result.get("confidence", 0.0))
+    test_patch_ops_added = int(patch_result.get("test_patch_ops_added", 0))
+    out = (test_output or "").strip()[:2000] or "No output captured."
+
+    title = "CodingAI validation passed"
+    summary = (
+        f"Issue #{issue_number}: tests passed after patch generation. "
+        f"Patch ops={patch_ops_count}, patch_conf={patch_conf:.2f}, "
+        f"test_ops_added={test_patch_ops_added}, "
+        f"selected_strategy={selected}, strategy_conf={selected_conf:.2f}."
+    )
+    text = (
+        "### Strategy Attempts\n"
+        f"{attempts_block}\n\n"
+        "### Last Test Output (truncated)\n"
+        "```text\n"
+        f"{out}\n"
+        "```"
+    )
+    return title, summary, text
 
 
 def process_issue(repo, issue, state):
@@ -423,6 +497,7 @@ def process_issue(repo, issue, state):
             max_ops=MAX_PATCH_OPS,
         )
         patch_ops = patch_result.get("patch_ops", [])
+        patch_result["test_patch_ops_added"] = 0
 
         if not patch_ops:
             reason = patch_result.get("reason", "Model returned no patch operations.")
@@ -434,6 +509,33 @@ def process_issue(repo, issue, state):
                 reason,
             )
             return
+
+        if AUTO_GENERATE_TEST_PATCHES:
+            test_patch_result = propose_test_patch_ops(
+                repo_path=repo_path,
+                repo_name=repo,
+                issue=issue,
+                repo_analysis=repo_analysis,
+                base_patch_ops=patch_ops,
+                max_ops=MAX_TEST_PATCH_OPS,
+            )
+            test_patch_ops = test_patch_result.get("patch_ops", [])
+            if test_patch_ops:
+                test_patch_conf = float(test_patch_result.get("confidence", 0.0) or 0.0)
+                patch_ops, added = _merge_patch_ops(
+                    patch_ops,
+                    test_patch_ops,
+                    max_ops=MAX_TOTAL_PATCH_OPS,
+                )
+                patch_result["test_patch_ops_added"] = added
+                patch_result["test_patch_confidence"] = test_patch_conf
+                patch_result["test_patch_reason"] = test_patch_result.get("reason", "")
+                print(
+                    f"Auto-generated test patch ops added: {added} "
+                    f"(candidate={len(test_patch_ops)} conf={test_patch_conf:.2f})"
+                )
+            else:
+                print(f"No test patch ops generated: {test_patch_result.get('reason', '')}")
 
         _apply_patch_ops_locally(repo_path, patch_ops)
 
@@ -502,6 +604,32 @@ def process_issue(repo, issue, state):
 
         print("PR URL:", pr_info["url"])
 
+        check_run_url = None
+        if ENABLE_GITHUB_CHECKS:
+            try:
+                check_title, check_summary, check_text = _build_check_run_output(
+                    issue_number=number,
+                    test_report=test_report,
+                    test_output=output,
+                    patch_result=patch_result,
+                    patch_ops_count=len(patch_ops),
+                )
+                check_run = create_completed_check_run(
+                    repo,
+                    name=CHECK_RUN_NAME,
+                    head_sha=commit_sha,
+                    conclusion="success",
+                    title=check_title,
+                    summary=check_summary,
+                    text=check_text,
+                    details_url=pr_info["url"],
+                    external_id=f"{repo}#{number}",
+                )
+                check_run_url = check_run.get("html_url")
+                print(f"Check run published: {check_run_url}")
+            except Exception as check_err:
+                print(f"Check run publish failed: {check_err}")
+
         comment_body = _build_pr_test_comment(
             issue_number=number,
             test_report=test_report,
@@ -526,6 +654,7 @@ def process_issue(repo, issue, state):
         issue_state["strategy_confidence_threshold"] = STRATEGY_SWITCH_CONFIDENCE_THRESHOLD
         issue_state["pr_number"] = pr_info["number"]
         issue_state["pr_url"] = pr_info["url"]
+        issue_state["check_run_url"] = check_run_url
         issue_state["report_comment_id"] = comment_result.get("id")
         issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
         issue_state["retry_after"] = 0
@@ -541,18 +670,37 @@ def process_issue(repo, issue, state):
         )
 
 
+def _run_repo_cycle(repo):
+    state = load_state()
+    try:
+        issues = get_ai_issues(repo)
+    except Exception as e:
+        print(f"Failed to fetch issues for {repo}: {e}")
+        return
+
+    for issue in issues:
+        process_issue(repo, issue, state)
+
+
 def loop(repo):
     while True:
-        state = load_state()
-        issues = get_ai_issues(repo)
+        _run_repo_cycle(repo)
+        time.sleep(POLL_INTERVAL)
 
-        for issue in issues:
-            process_issue(repo, issue, state)
 
+def loop_all(repos):
+    while True:
+        for repo in repos:
+            print(f"\n== Repo cycle: {repo} ==")
+            _run_repo_cycle(repo)
         time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
-    selected_repo = choose_repo()
-    print(f"\nAI Agent active for {selected_repo}")
-    loop(selected_repo)
+    selected = choose_repo()
+    if selected == "__all__":
+        print(f"\nAI Agent active for all repos: {', '.join(AVAILABLE_REPOS)}")
+        loop_all(AVAILABLE_REPOS)
+    else:
+        print(f"\nAI Agent active for {selected}")
+        loop(selected)

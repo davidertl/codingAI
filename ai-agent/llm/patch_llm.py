@@ -219,6 +219,19 @@ def _parse_confidence(v: Any) -> float:
     return max(0.0, min(1.0, conf))
 
 
+def _is_test_path(path: str) -> bool:
+    p = path.replace("\\", "/").lower()
+    base = os.path.basename(p)
+    if p.startswith("tests/") or "/tests/" in f"/{p}":
+        return True
+    return (
+        base.startswith("test_")
+        or "_test." in base
+        or ".spec." in base
+        or ".test." in base
+    )
+
+
 def propose_patch_ops(
     *,
     repo_path: str,
@@ -332,6 +345,130 @@ def propose_patch_ops(
 
     return {
         "patch_ops": validated_ops,
+        "reason": str(out.get("reason", ""))[:500],
+        "confidence": _parse_confidence(out.get("confidence", 0.0)),
+    }
+
+
+def propose_test_patch_ops(
+    *,
+    repo_path: str,
+    repo_name: str,
+    issue: dict,
+    repo_analysis: dict,
+    base_patch_ops: list[dict],
+    max_ops: int = 6,
+) -> dict:
+    if not OPENAI_API_KEY:
+        return {
+            "patch_ops": [],
+            "reason": "OPENAI_API_KEY not set; test patch generation disabled.",
+            "confidence": 0.0,
+        }
+
+    context = _collect_repo_context(repo_path, max_files=35, max_chars_per_file=2000, max_total_chars=32000)
+    issue_number = issue.get("number")
+    issue_title = str(issue.get("title", ""))
+    issue_body = str(issue.get("body", ""))
+
+    instructions = (
+        "You are a unit-test patch generator.\n"
+        "Given issue/repo context and base code patch ops, output ONLY JSON with schema:\n"
+        "{\n"
+        '  "patch_ops": [\n'
+        "    {\n"
+        '      "path": "relative/path",\n'
+        '      "action": "create|update|delete",\n'
+        '      "content": "full file content for create/update"\n'
+        "    }\n"
+        "  ],\n"
+        '  "reason": "short explanation",\n'
+        '  "confidence": 0.0\n'
+        "}\n"
+        "Rules:\n"
+        "- Output valid JSON only (no markdown).\n"
+        "- Return ONLY test-related files (paths under tests/ or filenames containing test/spec patterns).\n"
+        "- Do not modify production source files.\n"
+        "- Paths must be repo-relative and safe.\n"
+        "- Keep patch_ops focused and small.\n"
+    )
+
+    user_input = {
+        "repo_name": repo_name,
+        "issue": {
+            "number": issue_number,
+            "title": issue_title,
+            "body": issue_body[:12000],
+        },
+        "repo_analysis": repo_analysis,
+        "repo_context": context,
+        "base_patch_ops": base_patch_ops[:20],
+        "constraints": {"max_ops": max_ops},
+    }
+
+    payload = {
+        "model": OPENAI_PATCH_MODEL,
+        "instructions": instructions,
+        "input": json.dumps(user_input, ensure_ascii=False),
+        "max_output_tokens": 2500,
+        "text": {"format": {"type": "text"}},
+    }
+
+    r = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=120,
+    )
+
+    if r.status_code >= 400:
+        return {
+            "patch_ops": [],
+            "reason": f"OpenAI API error {r.status_code}; test patch generation unavailable.",
+            "confidence": 0.0,
+        }
+
+    try:
+        data = r.json()
+    except Exception:
+        return {
+            "patch_ops": [],
+            "reason": "OpenAI API returned invalid JSON payload for test patch ops.",
+            "confidence": 0.0,
+        }
+
+    output_text = data.get("output_text", "")
+    try:
+        out = _extract_json(output_text)
+    except Exception:
+        return {
+            "patch_ops": [],
+            "reason": "Model output was not valid JSON for test patch ops.",
+            "confidence": 0.0,
+        }
+
+    try:
+        validated_ops = _validate_patch_ops(out.get("patch_ops"), max_ops=max_ops)
+    except Exception as e:
+        return {
+            "patch_ops": [],
+            "reason": f"Test patch validation failed: {e}",
+            "confidence": 0.0,
+        }
+
+    test_only_ops = [op for op in validated_ops if _is_test_path(op["path"])]
+    if len(test_only_ops) != len(validated_ops):
+        return {
+            "patch_ops": [],
+            "reason": "Model proposed non-test files for test patch ops; discarded for safety.",
+            "confidence": 0.0,
+        }
+
+    return {
+        "patch_ops": test_only_ops,
         "reason": str(out.get("reason", ""))[:500],
         "confidence": _parse_confidence(out.get("confidence", 0.0)),
     }

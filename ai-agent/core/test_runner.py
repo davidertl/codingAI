@@ -5,6 +5,11 @@ import time
 
 from llm.strategy_llm import pick_next_strategy
 
+_TRUTHY = {"1", "true", "yes", "on"}
+DOCKER_COMPOSE_EPHEMERAL_UP_ENABLED = (
+    os.getenv("DOCKER_COMPOSE_EPHEMERAL_UP_ENABLED", "true").strip().lower() in _TRUTHY
+)
+
 
 def _run(cmd, *, cwd=None):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
@@ -220,6 +225,54 @@ def strat_docker_compose_build(repo_path: str):
     return res.returncode == 0, out.strip()
 
 
+def _compose_first_service(repo_path: str) -> str | None:
+    res = _run(["docker", "compose", "config", "--services"], cwd=repo_path)
+    if res.returncode != 0:
+        return None
+    for line in (res.stdout or "").splitlines():
+        service = line.strip()
+        if service:
+            return service
+    return None
+
+
+def _compose_project_name(repo_path: str) -> str:
+    base = os.path.basename(os.path.abspath(repo_path)).lower()
+    safe = "".join(ch for ch in base if ch.isalnum()) or "repo"
+    stamp = int(time.time()) % 1000000
+    return f"ai{safe[:20]}{stamp}{_fingerprint(repo_path)[:6]}"
+
+
+def strat_docker_compose_ephemeral_up(repo_path: str):
+    service = _compose_first_service(repo_path)
+    if not service:
+        return False, "Could not resolve docker compose service list for ephemeral run."
+
+    project_name = _compose_project_name(repo_path)
+    up_cmd = [
+        "docker", "compose", "-p", project_name,
+        "up", "--build", "--abort-on-container-exit", "--exit-code-from", service,
+    ]
+    down_cmd = [
+        "docker", "compose", "-p", project_name,
+        "down", "-v", "--remove-orphans",
+    ]
+
+    up = _run(up_cmd, cwd=repo_path)
+    down = _run(down_cmd, cwd=repo_path)
+
+    out = []
+    out.append(f"ephemeral_project={project_name}")
+    out.append("--- docker compose up ---")
+    out.append((up.stdout or "").strip())
+    out.append((up.stderr or "").strip())
+    out.append("--- docker compose down ---")
+    out.append((down.stdout or "").strip())
+    out.append((down.stderr or "").strip())
+    combined = "\n".join(part for part in out if part)
+    return up.returncode == 0, combined.strip()
+
+
 def strat_docker_build(repo_path: str):
     res = _run(["docker", "build", "-t", "ai-test-image", "."], cwd=repo_path)
     out = (res.stdout or "") + "\n" + (res.stderr or "")
@@ -330,6 +383,14 @@ def run_tests(
 
     if repo_analysis["has_docker_compose"]:
         strategies.append({"id": "docker_compose_build", "desc": "docker compose build", "kind": "native"})
+        if DOCKER_COMPOSE_EPHEMERAL_UP_ENABLED:
+            strategies.append(
+                {
+                    "id": "docker_compose_ephemeral_up",
+                    "desc": "docker compose up in isolated ephemeral project",
+                    "kind": "native",
+                }
+            )
     if repo_analysis["has_dockerfile_root"]:
         strategies.append({"id": "docker_build", "desc": "docker build (root Dockerfile)", "kind": "native"})
     if repo_analysis["dotnet_projects"]:
@@ -365,6 +426,8 @@ def run_tests(
 
         if current["id"] == "docker_compose_build":
             ok, out = strat_docker_compose_build(repo_path)
+        elif current["id"] == "docker_compose_ephemeral_up":
+            ok, out = strat_docker_compose_ephemeral_up(repo_path)
         elif current["id"] == "docker_build":
             ok, out = strat_docker_build(repo_path)
         elif current["id"] == "dotnet_build_docker":
