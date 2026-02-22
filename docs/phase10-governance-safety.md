@@ -74,3 +74,7 @@ From `ai-agent/service/api.py`:
 1. `GET /policies`
 2. `GET /policy/{repo}`
 3. `GET /repo/{repo}/summary` now includes `policy` and `budget` sections.
+
+## Phase 11 dependency note
+
+Phase 11 adds CI gate controls under `policy.ci` and observability endpoints. This file remains focused on governance/budgets/dry-run behavior introduced in Phase 10.

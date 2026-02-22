@@ -4,10 +4,12 @@ import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
+from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
 from core.test_runner import analyze_repo, run_tests
 from github.checks_manager import create_completed_check_run
+from github.ci_status import get_pr_ci_status
 from github.git_api_commit import (
     build_tree_from_patchops,
     create_branch,
@@ -92,7 +94,94 @@ def _get_issue_state(state, repo, number):
     return state.setdefault(repo, {}).setdefault(str(number), {})
 
 
-def _register_failure(state, repo, number, summary, details, *, policy):
+def _elapsed_ms(started_at):
+    if started_at is None:
+        return None
+    return max(0, int((time.time() - float(started_at)) * 1000))
+
+
+def _record_issue_outcome(state, repo, number, status, *, dry_run, started_at=None, data=None, persist=True):
+    issue_state = _get_issue_state(state, repo, number)
+    duration_ms = _elapsed_ms(started_at)
+    issue_state["last_status"] = str(status)
+    issue_state["dry_run"] = bool(dry_run)
+    issue_state["last_processed_at"] = int(time.time())
+    if duration_ms is not None:
+        issue_state["last_duration_ms"] = duration_ms
+    if persist:
+        save_state(state)
+
+    labels = {
+        "repo": repo,
+        "status": str(status),
+        "dry_run": "true" if dry_run else "false",
+    }
+    inc_counter("codingai_issue_runs_total", labels=labels)
+    if duration_ms is not None:
+        observe_duration_ms(
+            "codingai_issue_duration_ms",
+            duration_ms,
+            labels={"repo": repo, "status": str(status)},
+        )
+    record_event(
+        "issue_outcome",
+        repo=repo,
+        issue_number=number,
+        status=str(status),
+        duration_ms=duration_ms,
+        data=data or {},
+    )
+    return duration_ms
+
+
+def _evaluate_ci_gate(ci_summary, ci_policy):
+    allowed = {str(x).strip().lower() for x in ci_policy.get("allowed_check_conclusions", []) if str(x).strip()}
+    if not allowed:
+        allowed = {"success", "neutral", "skipped"}
+
+    combined_state = str(ci_summary.get("combined_state", "")).lower()
+    status_failure = int(ci_summary.get("status_failure", 0))
+    status_pending = int(ci_summary.get("status_pending", 0))
+    check_queued = int(ci_summary.get("check_queued", 0))
+    check_in_progress = int(ci_summary.get("check_in_progress", 0))
+    check_total = int(ci_summary.get("check_total", 0))
+    status_context_total = int(ci_summary.get("status_context_total", 0))
+    conclusions = ci_summary.get("check_conclusions", {})
+
+    pending = combined_state == "pending" or status_pending > 0 or check_queued > 0 or check_in_progress > 0
+    failing = combined_state in {"error", "failure"} or status_failure > 0
+    for conclusion, count in conclusions.items():
+        if int(count) <= 0:
+            continue
+        if str(conclusion).lower() not in allowed:
+            failing = True
+            break
+
+    checks_present = (status_context_total + check_total) > 0
+    should_block = False
+    reason = "ok"
+
+    if bool(ci_policy.get("require_checks_present", False)) and not checks_present:
+        should_block = True
+        reason = "missing_checks"
+    elif bool(ci_policy.get("block_on_failed", True)) and failing:
+        should_block = True
+        reason = "ci_failed"
+    elif bool(ci_policy.get("block_on_pending", True)) and pending:
+        should_block = True
+        reason = "ci_pending"
+
+    return {
+        "should_block": should_block,
+        "reason": reason,
+        "pending": pending,
+        "failing": failing,
+        "checks_present": checks_present,
+        "allowed_conclusions": sorted(allowed),
+    }
+
+
+def _register_failure(state, repo, number, summary, details, *, policy, started_at=None):
     details = (details or "").strip()
     details = details[:12000]
     dry_run = bool(policy.get("dry_run", False))
@@ -119,6 +208,21 @@ def _register_failure(state, repo, number, summary, details, *, policy):
     issue_state["ai_stop_phrase"] = ai_stop_phrase
     issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
     save_state(state)
+
+    _record_issue_outcome(
+        state,
+        repo,
+        number,
+        issue_state["last_status"],
+        dry_run=dry_run,
+        started_at=started_at,
+        data={
+            "summary": str(summary)[:280],
+            "error_excerpt": details[:1000],
+            "publish_failure_issue": publish_failure_issue and not dry_run,
+        },
+        persist=False,
+    )
 
 
 def _apply_strategy_memory_update(state, repo, test_report):
@@ -453,26 +557,52 @@ def _build_check_run_output(issue_number, test_report, test_output, patch_result
 def process_issue(repo, issue, state, policy=None):
     policy = policy or get_repo_policy(repo)
     number = str(issue["number"])
+    issue_started = time.time()
     issue_state = _get_issue_state(state, repo, number)
     pr_policy = policy.get("pr", {})
     patch_policy = policy.get("patch", {})
     strategy_policy = policy.get("strategy", {})
+    ci_policy = policy.get("ci", {})
     dry_run = bool(policy.get("dry_run", False))
 
     issue_state["dry_run"] = dry_run
     issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
 
     if not bool(policy.get("enabled", True)):
-        issue_state["last_status"] = "policy_disabled"
-        save_state(state)
+        _record_issue_outcome(
+            state,
+            repo,
+            number,
+            "policy_disabled",
+            dry_run=dry_run,
+            started_at=issue_started,
+            data={"reason": "policy_disabled"},
+        )
         print(f"Issue #{number} skipped because repo policy is disabled.")
         return
+
+    record_event(
+        "issue_started",
+        repo=repo,
+        issue_number=number,
+        status="started",
+        data={"dry_run": dry_run},
+    )
 
     # resolve active/open PR branch first (iteration naming strategy)
     try:
         branch, existing_pr = _resolve_branch_for_issue(state, repo, number, policy)
 
         if _sync_ai_stop_state(state, repo, number, branch, policy):
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "ai_stopped",
+                dry_run=dry_run,
+                started_at=issue_started,
+                data={"reason": "ai_stop_comment"},
+            )
             print(f"Issue #{number} has AI Stop on PR comments. Processing disabled.")
             return
     except Exception as e:
@@ -483,6 +613,7 @@ def process_issue(repo, issue, state, policy=None):
             f"Phase 5 preflight failed for issue #{number}.",
             str(e),
             policy=policy,
+            started_at=issue_started,
         )
         return
 
@@ -494,8 +625,15 @@ def process_issue(repo, issue, state, policy=None):
 
     if not _has_manual_approval(issue, policy):
         issue_state["pending_manual_approval"] = True
-        issue_state["last_status"] = "pending_manual_approval"
-        save_state(state)
+        _record_issue_outcome(
+            state,
+            repo,
+            number,
+            "pending_manual_approval",
+            dry_run=dry_run,
+            started_at=issue_started,
+            data={"reason": "manual_approval_required"},
+        )
         print(f"Issue #{number} pending manual approval. Skipping.")
         return
     issue_state["pending_manual_approval"] = False
@@ -503,22 +641,131 @@ def process_issue(repo, issue, state, policy=None):
     if dry_run:
         issue_updated_at = str(issue.get("updated_at", ""))
         if issue_updated_at and issue_updated_at == str(issue_state.get("dry_run_source_issue_updated_at", "")):
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "dry_run_unchanged",
+                dry_run=dry_run,
+                started_at=issue_started,
+                data={"reason": "source_issue_unchanged"},
+            )
             print(f"Issue #{number} unchanged since previous dry-run execution. Skipping.")
             return
 
     # Existing PR behavior: either skip completely or auto-update only when issue changed.
     if issue_state.get("pr_created"):
         if not bool(pr_policy.get("auto_update_enabled", True)):
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "auto_update_disabled",
+                dry_run=dry_run,
+                started_at=issue_started,
+                data={"reason": "policy_auto_update_disabled"},
+            )
             print(f"Issue #{number} has existing PR and auto-update is disabled. Skipping.")
             return
 
         issue_updated_at = str(issue.get("updated_at", ""))
         if issue_updated_at and issue_updated_at == str(issue_state.get("source_issue_updated_at", "")):
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "source_issue_unchanged",
+                dry_run=dry_run,
+                started_at=issue_started,
+                data={"reason": "source_issue_unchanged"},
+            )
             print(f"Issue #{number} unchanged since last run; skipping PR auto-update.")
             return
 
+        if bool(ci_policy.get("require_green_before_update", False)):
+            pr_number = issue_state.get("pr_number")
+            if not pr_number and existing_pr:
+                pr_number = existing_pr.get("number")
+            if pr_number:
+                ci_started = time.time()
+                try:
+                    ci_summary = get_pr_ci_status(repo, int(pr_number))
+                except Exception as ci_error:
+                    on_error = str(ci_policy.get("on_error", "allow")).strip().lower()
+                    issue_state["ci_gate"] = {
+                        "checked_at": int(time.time()),
+                        "error": str(ci_error)[:500],
+                        "on_error": on_error,
+                    }
+                    save_state(state)
+                    record_event(
+                        "ci_gate_error",
+                        repo=repo,
+                        issue_number=number,
+                        status="error",
+                        duration_ms=_elapsed_ms(ci_started),
+                        data={"on_error": on_error, "error": str(ci_error)[:200]},
+                    )
+                    inc_counter("codingai_ci_gate_total", labels={"repo": repo, "result": "error"})
+                    if on_error == "block":
+                        retry_after = int(time.time()) + int(ci_policy.get("retry_after_seconds", 900))
+                        issue_state["retry_after"] = retry_after
+                        _record_issue_outcome(
+                            state,
+                            repo,
+                            number,
+                            "ci_gate_error_blocked",
+                            dry_run=dry_run,
+                            started_at=issue_started,
+                            data={"error": str(ci_error)[:200], "retry_after": retry_after},
+                        )
+                        print(f"Issue #{number} blocked by CI gate error policy.")
+                        return
+                else:
+                    decision = _evaluate_ci_gate(ci_summary, ci_policy)
+                    issue_state["ci_gate"] = {
+                        "checked_at": int(time.time()),
+                        "pr_number": int(pr_number),
+                        "summary": ci_summary,
+                        "decision": decision,
+                    }
+                    save_state(state)
+                    gate_status = "blocked" if decision.get("should_block") else "pass"
+                    record_event(
+                        "ci_gate_checked",
+                        repo=repo,
+                        issue_number=number,
+                        status=gate_status,
+                        duration_ms=_elapsed_ms(ci_started),
+                        data={"reason": decision.get("reason"), "pending": decision.get("pending"), "failing": decision.get("failing")},
+                    )
+                    inc_counter("codingai_ci_gate_total", labels={"repo": repo, "result": gate_status})
+                    if decision.get("should_block"):
+                        retry_after = int(time.time()) + int(ci_policy.get("retry_after_seconds", 900))
+                        issue_state["retry_after"] = retry_after
+                        _record_issue_outcome(
+                            state,
+                            repo,
+                            number,
+                            "ci_gate_blocked",
+                            dry_run=dry_run,
+                            started_at=issue_started,
+                            data={"reason": decision.get("reason"), "retry_after": retry_after},
+                        )
+                        print(f"Issue #{number} blocked by CI gate ({decision.get('reason')}).")
+                        return
+
     # Cooldown
     if should_skip_due_to_cooldown(state, repo, number):
+        _record_issue_outcome(
+            state,
+            repo,
+            number,
+            "cooldown",
+            dry_run=dry_run,
+            started_at=issue_started,
+            data={"reason": "retry_after_active"},
+        )
         print(f"Issue #{number} in cooldown. Skipping.")
         return
 
@@ -529,9 +776,17 @@ def process_issue(repo, issue, state, policy=None):
         day_key = _utc_day_key()
         daily_count = _get_daily_pr_count(state, repo, day_key)
         if daily_count >= max_prs_per_day:
-            issue_state["last_status"] = "daily_pr_limit_reached"
-            issue_state["retry_after"] = int(time.time()) + _seconds_until_next_utc_day()
-            save_state(state)
+            retry_after = int(time.time()) + _seconds_until_next_utc_day()
+            issue_state["retry_after"] = retry_after
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "daily_pr_limit_reached",
+                dry_run=dry_run,
+                started_at=issue_started,
+                data={"day_key": day_key, "daily_count": daily_count, "max_per_day": max_prs_per_day},
+            )
             print(
                 f"Repo {repo} reached daily PR cap ({daily_count}/{max_prs_per_day}) on {day_key}. Skipping."
             )
@@ -541,9 +796,17 @@ def process_issue(repo, issue, state, policy=None):
         week_key = _utc_week_key()
         weekly_count = _get_weekly_pr_count(state, repo, week_key)
         if weekly_count >= max_prs_per_week:
-            issue_state["last_status"] = "weekly_pr_limit_reached"
-            issue_state["retry_after"] = int(time.time()) + _seconds_until_next_utc_week()
-            save_state(state)
+            retry_after = int(time.time()) + _seconds_until_next_utc_week()
+            issue_state["retry_after"] = retry_after
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "weekly_pr_limit_reached",
+                dry_run=dry_run,
+                started_at=issue_started,
+                data={"week_key": week_key, "weekly_count": weekly_count, "max_per_week": max_prs_per_week},
+            )
             print(
                 f"Repo {repo} reached weekly PR cap ({weekly_count}/{max_prs_per_week}) on {week_key}. Skipping."
             )
@@ -566,6 +829,7 @@ def process_issue(repo, issue, state, policy=None):
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
         repo_analysis = analyze_repo(repo_path)
+        patch_started = time.time()
         patch_result = propose_patch_ops(
             repo_path=repo_path,
             repo_name=repo,
@@ -573,8 +837,18 @@ def process_issue(repo, issue, state, policy=None):
             repo_analysis=repo_analysis,
             max_ops=int(patch_policy.get("max_patch_ops", 20)),
         )
+        patch_duration_ms = _elapsed_ms(patch_started)
         patch_ops = patch_result.get("patch_ops", [])
         patch_result["test_patch_ops_added"] = 0
+        observe_duration_ms("codingai_patch_generation_duration_ms", patch_duration_ms or 0, labels={"repo": repo})
+        record_event(
+            "patch_generated",
+            repo=repo,
+            issue_number=number,
+            status="ok" if patch_ops else "empty",
+            duration_ms=patch_duration_ms,
+            data={"ops": len(patch_ops), "confidence": float(patch_result.get("confidence", 0.0) or 0.0)},
+        )
 
         if not patch_ops:
             reason = patch_result.get("reason", "Model returned no patch operations.")
@@ -585,10 +859,12 @@ def process_issue(repo, issue, state, policy=None):
                 f"Patch generation failed for issue #{number}.",
                 reason,
                 policy=policy,
+                started_at=issue_started,
             )
             return
 
         if bool(patch_policy.get("auto_generate_test_patches", False)):
+            test_patch_started = time.time()
             test_patch_result = propose_test_patch_ops(
                 repo_path=repo_path,
                 repo_name=repo,
@@ -614,8 +890,14 @@ def process_issue(repo, issue, state, policy=None):
                 )
             else:
                 print(f"No test patch ops generated: {test_patch_result.get('reason', '')}")
+            observe_duration_ms(
+                "codingai_test_patch_generation_duration_ms",
+                _elapsed_ms(test_patch_started) or 0,
+                labels={"repo": repo},
+            )
 
         _apply_patch_ops_locally(repo_path, patch_ops)
+        inc_counter("codingai_patch_ops_total", value=len(patch_ops), labels={"repo": repo})
 
         if not _local_repo_has_changes(repo_path):
             _register_failure(
@@ -625,17 +907,36 @@ def process_issue(repo, issue, state, policy=None):
                 f"Patch ops produced no effective file changes for issue #{number}.",
                 patch_result.get("reason", ""),
                 policy=policy,
+                started_at=issue_started,
             )
             return
 
         print("Patch applied locally. Running tests on patched repository...")
         confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
+        tests_started = time.time()
         success, output, test_report = run_tests(
             repo_path,
             repo_name=repo,
             max_attempts=3,
             strategy_memory=repo_strategy_memory,
             min_confidence_for_switch=confidence_threshold,
+        )
+        tests_duration_ms = _elapsed_ms(tests_started)
+        attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else 0
+        observe_duration_ms(
+            "codingai_test_execution_duration_ms",
+            tests_duration_ms or 0,
+            labels={"repo": repo, "result": "passed" if success else "failed"},
+        )
+        inc_counter("codingai_test_runs_total", labels={"repo": repo, "result": "passed" if success else "failed"})
+        inc_counter("codingai_test_attempts_total", value=max(1, attempts_count), labels={"repo": repo})
+        record_event(
+            "tests_finished",
+            repo=repo,
+            issue_number=number,
+            status="passed" if success else "failed",
+            duration_ms=tests_duration_ms,
+            data={"attempts": attempts_count},
         )
         _apply_strategy_memory_update(state, repo, test_report)
 
@@ -647,12 +948,12 @@ def process_issue(repo, issue, state, policy=None):
                 f"Patched repository failed tests for issue #{number}.",
                 output,
                 policy=policy,
+                started_at=issue_started,
             )
             return
 
         if dry_run:
             issue_state["active_branch"] = branch
-            issue_state["last_status"] = "dry_run_passed"
             issue_state["patch_ops_count"] = len(patch_ops)
             issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
             issue_state["strategy_confidence_threshold"] = confidence_threshold
@@ -665,7 +966,15 @@ def process_issue(repo, issue, state, policy=None):
                 "would_publish_check_run": bool(pr_policy.get("enable_github_checks", True)),
                 "would_upsert_pr_comment": True,
             }
-            save_state(state)
+            _record_issue_outcome(
+                state,
+                repo,
+                number,
+                "dry_run_passed",
+                dry_run=True,
+                started_at=issue_started,
+                data={"patch_ops_count": len(patch_ops), "attempts": attempts_count},
+            )
             print("Dry-run mode enabled. GitHub write operations were skipped.")
             return
 
@@ -697,6 +1006,7 @@ def process_issue(repo, issue, state, policy=None):
                 f"PR creation failed for issue #{number}.",
                 "Commit was created and branch updated, but PR creation returned no result.",
                 policy=policy,
+                started_at=issue_started,
             )
             return
 
@@ -750,7 +1060,6 @@ def process_issue(repo, issue, state, policy=None):
 
         issue_state["active_branch"] = branch
         issue_state["pr_created"] = True
-        issue_state["last_status"] = "passed"
         issue_state["patch_ops_count"] = len(patch_ops)
         issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
         issue_state["strategy_confidence_threshold"] = confidence_threshold
@@ -761,7 +1070,22 @@ def process_issue(repo, issue, state, policy=None):
         issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
         issue_state["retry_after"] = 0
         issue_state["dry_run"] = False
-        save_state(state)
+        _record_issue_outcome(
+            state,
+            repo,
+            number,
+            "passed",
+            dry_run=False,
+            started_at=issue_started,
+            data={"patch_ops_count": len(patch_ops), "attempts": attempts_count, "pr_number": pr_info["number"]},
+        )
+        record_event(
+            "issue_github_write_complete",
+            repo=repo,
+            issue_number=number,
+            status="passed",
+            data={"pr_number": pr_info["number"], "check_run_url": check_run_url},
+        )
 
     except Exception as e:
         _register_failure(
@@ -771,10 +1095,16 @@ def process_issue(repo, issue, state, policy=None):
             f"Patch pipeline failed for issue #{number}.",
             str(e),
             policy=policy,
+            started_at=issue_started,
         )
 
 
 def _run_repo_cycle(repo):
+    cycle_started = time.time()
+    cycle_status = "ok"
+    issues_count = 0
+    record_event("repo_cycle_start", repo=repo, status="started")
+
     state = load_state()
     repo_policy = get_repo_policy(repo)
 
@@ -801,24 +1131,43 @@ def _run_repo_cycle(repo):
     save_state(state)
 
     if not repo_policy.get("enabled", True):
+        cycle_status = "policy_disabled"
         print(f"Policy disabled repo cycle for {repo}.")
-        return
-
-    if not llm_ready.get("ready"):
+    elif not llm_ready.get("ready"):
+        cycle_status = "llm_not_ready"
         print(
             f"LLM not ready (requested={llm_ready.get('requested_provider')}, "
             f"chain={llm_ready.get('provider_chain')}). Skipping repo cycle for {repo}."
         )
-        return
+    else:
+        try:
+            issues = get_ai_issues(repo)
+            issues_count = len(issues)
+        except Exception as e:
+            cycle_status = "issues_fetch_failed"
+            print(f"Failed to fetch issues for {repo}: {e}")
+        else:
+            if not issues:
+                cycle_status = "no_issues"
+            for issue in issues:
+                process_issue(repo, issue, state, policy=repo_policy)
 
-    try:
-        issues = get_ai_issues(repo)
-    except Exception as e:
-        print(f"Failed to fetch issues for {repo}: {e}")
-        return
-
-    for issue in issues:
-        process_issue(repo, issue, state, policy=repo_policy)
+    cycle_duration_ms = _elapsed_ms(cycle_started) or 0
+    inc_counter("codingai_repo_cycles_total", labels={"repo": repo, "status": cycle_status})
+    observe_duration_ms(
+        "codingai_repo_cycle_duration_ms",
+        cycle_duration_ms,
+        labels={"repo": repo, "status": cycle_status},
+    )
+    set_gauge("codingai_repo_last_cycle_duration_ms", cycle_duration_ms, labels={"repo": repo})
+    set_gauge("codingai_repo_last_cycle_issues_count", issues_count, labels={"repo": repo})
+    record_event(
+        "repo_cycle_end",
+        repo=repo,
+        status=cycle_status,
+        duration_ms=cycle_duration_ms,
+        data={"issues_count": issues_count},
+    )
 
 
 def run_repo_cycle_once(repo):

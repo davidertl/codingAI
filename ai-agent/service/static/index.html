@@ -298,7 +298,7 @@
     <section class="panel">
       <div class="hd">
         <h1 class="title">CodingAI Dashboard</h1>
-        <div class="subtitle">Phase 10: queue, runtime status, controls, PR/test visibility, governance</div>
+        <div class="subtitle">Phase 11: queue, runtime status, controls, governance, CI and observability</div>
         <div class="kpis">
           <div class="kpi">
             <div class="k">LLM</div>
@@ -508,11 +508,17 @@
       const cards = issues.map((item) => {
         const status = item.last_status || "unknown";
         const statusCls = statusClass(status);
+        const ciGate = item.ci_gate || {};
+        const ciDecision = ciGate.decision || {};
         const links = [
           item.pr_url ? `<a href="${item.pr_url}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
           item.check_run_url ? `<a href="${item.check_run_url}" target="_blank" rel="noreferrer">check run</a>` : "",
         ].filter(Boolean).join(" | ");
         const retry = item.retry_after ? new Date(item.retry_after * 1000).toISOString() : "-";
+        const lastDuration = item.last_duration_ms != null ? `${item.last_duration_ms}ms` : "-";
+        const ciText = ciGate.checked_at
+          ? `ci_gate=${ciDecision.reason || ciGate.error || "ok"}`
+          : "ci_gate=not_checked";
         const err = item.last_error ? `<div class="mono">error: ${String(item.last_error).slice(0, 140)}</div>` : "";
         return `
           <article class="issue">
@@ -522,6 +528,7 @@
             </div>
             <div class="mono">branch: ${item.active_branch || "-"}</div>
             <div class="mono">patch_ops=${item.patch_ops_count ?? "-"} patch_conf=${item.patch_confidence ?? "-"}</div>
+            <div class="mono">last_duration=${lastDuration} ${ciText}</div>
             <div class="mono">retry_after=${retry}</div>
             <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>
             ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${item.ai_stop_reason || "reason n/a"})</div>` : ""}

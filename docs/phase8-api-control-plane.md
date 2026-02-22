@@ -16,11 +16,15 @@ Expose agent execution and state over HTTP with per-repo managed workers.
 6. `GET /repo/{repo}/summary`
 7. `GET /policies`
 8. `GET /policy/{repo}`
-9. `POST /run/repo/{repo}`
-10. `POST /run-once/repo/{repo}`
-11. `POST /stop/repo/{repo}`
-12. `GET /` and `GET /ui` (serve dashboard HTML)
-13. `GET /ui/static/*` (dashboard assets)
+9. `GET /metrics`
+10. `GET /metrics/json`
+11. `GET /events`
+12. `GET /ci/{repo}/{pr_number}`
+13. `POST /run/repo/{repo}`
+14. `POST /run-once/repo/{repo}`
+15. `POST /stop/repo/{repo}`
+16. `GET /` and `GET /ui` (serve dashboard HTML)
+17. `GET /ui/static/*` (dashboard assets)
 
 ## Worker model
 

@@ -85,6 +85,20 @@ curl -s http://127.0.0.1:8000/policy/KRT-leadtool
 curl -s http://127.0.0.1:8000/policies
 ```
 
+### Observability inspection
+
+```bash
+curl -s http://127.0.0.1:8000/metrics
+curl -s http://127.0.0.1:8000/metrics/json
+curl -s "http://127.0.0.1:8000/events?limit=50&repo=KRT-leadtool"
+```
+
+### CI status inspection
+
+```bash
+curl -s http://127.0.0.1:8000/ci/KRT-leadtool/1
+```
+
 ### Run one cycle
 
 ```bash

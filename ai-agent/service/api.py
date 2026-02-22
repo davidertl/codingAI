@@ -4,10 +4,19 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from core.observability import (
+    get_metrics_snapshot,
+    inc_counter,
+    read_recent_events,
+    record_event,
+    render_prometheus_metrics,
+    set_gauge,
+)
 import main
+from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 
@@ -62,6 +71,13 @@ class RepoWorker:
                 err = ""
             except Exception as e:
                 err = str(e)
+                inc_counter("codingai_worker_errors_total", labels={"repo": self.repo})
+                record_event(
+                    "worker_cycle_error",
+                    repo=self.repo,
+                    status="error",
+                    data={"error": err[:300]},
+                )
 
             with self._lock:
                 self.cycles += 1
@@ -128,7 +144,12 @@ class WorkerManager:
     def list_workers(self) -> list[dict]:
         with self._lock:
             workers = list(self._workers.values())
-        return [w.snapshot() for w in workers]
+        snapshots = [w.snapshot() for w in workers]
+        set_gauge(
+            "codingai_workers_running",
+            len([w for w in snapshots if w.get("running")]),
+        )
+        return snapshots
 
     def is_repo_running(self, repo: str) -> bool:
         with self._lock:
@@ -143,7 +164,7 @@ class WorkerManager:
 
 
 manager = WorkerManager()
-app = FastAPI(title="CodingAI Control Plane", version="0.2.0")
+app = FastAPI(title="CodingAI Control Plane", version="0.3.0")
 app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
@@ -179,6 +200,9 @@ def _repo_state_summary(repo: str) -> list[dict]:
                 "active_branch": value.get("active_branch"),
                 "last_error": value.get("last_error"),
                 "source_issue_updated_at": value.get("source_issue_updated_at"),
+                "last_duration_ms": value.get("last_duration_ms"),
+                "last_processed_at": value.get("last_processed_at"),
+                "ci_gate": value.get("ci_gate"),
             }
         )
     out.sort(key=lambda x: x["issue_number"])
@@ -211,6 +235,7 @@ def _repo_budget_status(repo: str) -> dict:
 def health():
     llm_ready = ensure_llm_ready(force=False)
     llm_runtime = get_llm_runtime_status()
+    set_gauge("codingai_workers_running", len([w for w in manager.list_workers() if w.get("running")]))
     return {
         "status": "ok",
         "time_utc": _utc_now_iso(),
@@ -220,6 +245,30 @@ def health():
         "llm_requested_provider": llm_ready.get("requested_provider"),
         "llm_provider_chain": llm_ready.get("provider_chain", []),
         "llm_telemetry_file": llm_runtime.get("telemetry_file"),
+    }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    return render_prometheus_metrics()
+
+
+@app.get("/metrics/json")
+def metrics_json():
+    return {
+        "time_utc": _utc_now_iso(),
+        "metrics": get_metrics_snapshot(),
+    }
+
+
+@app.get("/events")
+def events(limit: int = 100, repo: str | None = None, event: str | None = None):
+    limit = max(1, min(int(limit), 1000))
+    items = read_recent_events(limit=limit, repo=repo, event=event)
+    return {
+        "time_utc": _utc_now_iso(),
+        "count": len(items),
+        "events": items,
     }
 
 
@@ -292,6 +341,31 @@ def queue(repo: str):
         return {"repo": repo, "count": 0, "issues": [], "error": str(e)[:500]}
 
 
+@app.get("/ci/{repo}/{pr_number}")
+def ci_status(repo: str, pr_number: int):
+    _require_repo(repo)
+    started = time.time()
+    try:
+        summary = get_pr_ci_status(repo, int(pr_number))
+    except Exception as e:
+        inc_counter("codingai_ci_gate_total", labels={"repo": repo, "result": "api_error"})
+        raise HTTPException(status_code=502, detail=f"CI status lookup failed: {str(e)[:280]}")
+    duration_ms = int((time.time() - started) * 1000)
+    record_event(
+        "api_ci_status_lookup",
+        repo=repo,
+        status="ok",
+        duration_ms=duration_ms,
+        data={"pr_number": int(pr_number)},
+    )
+    return {
+        "repo": repo,
+        "time_utc": _utc_now_iso(),
+        "ci_status": summary,
+        "duration_ms": duration_ms,
+    }
+
+
 @app.get("/repo/{repo}/summary")
 def repo_summary(repo: str):
     _require_repo(repo)
@@ -334,6 +408,8 @@ def run_repo(repo: str):
         snapshot = manager.start_repo(repo)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown repo '{repo}'")
+    inc_counter("codingai_api_actions_total", labels={"action": "run_repo"})
+    record_event("api_run_repo", repo=repo, status="started")
 
     return {
         "repo": repo,
@@ -350,8 +426,19 @@ def run_repo_once(repo: str):
     try:
         main.run_repo_cycle_once(repo)
     except Exception as e:
+        duration_ms = int((time.time() - started) * 1000)
+        inc_counter("codingai_api_actions_total", labels={"action": "run_repo_once_error"})
+        record_event(
+            "api_run_repo_once",
+            repo=repo,
+            status="error",
+            duration_ms=duration_ms,
+            data={"error": str(e)[:280]},
+        )
         raise HTTPException(status_code=500, detail=str(e)[:500])
     duration_ms = int((time.time() - started) * 1000)
+    inc_counter("codingai_api_actions_total", labels={"action": "run_repo_once"})
+    record_event("api_run_repo_once", repo=repo, status="ok", duration_ms=duration_ms)
     return {
         "repo": repo,
         "ran_once": True,
@@ -363,6 +450,8 @@ def run_repo_once(repo: str):
 def stop_repo(repo: str):
     _require_repo(repo)
     snapshot = manager.stop_repo(repo)
+    inc_counter("codingai_api_actions_total", labels={"action": "stop_repo"})
+    record_event("api_stop_repo", repo=repo, status="stopped")
     return {
         "repo": repo,
         "running": False,

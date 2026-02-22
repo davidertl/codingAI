@@ -2,7 +2,7 @@
 
 This reflects the code currently in `ai-agent/` on branch `localstate`.
 
-## Phase status (1-10)
+## Phase status (1-11)
 
 1. `Phase 1 - Real patch generation`: Implemented  
    - LLM patch ops (`llm/patch_llm.py`)  
@@ -36,6 +36,10 @@ This reflects the code currently in `ai-agent/` on branch `localstate`.
    - Repo policy files + resolver (`config/policies/*.json`, `core/policy.py`)  
    - Daily and weekly PR budgets from policy (`main.py`)  
    - Dry-run mode that skips GitHub writes (`main.py`)
+11. `Phase 11 - Observability + CI integration`: Implemented
+   - Structured event logging + metric registry (`core/observability.py`)
+   - Prometheus-style metrics + event/CI endpoints (`service/api.py`)
+   - CI-aware gating before iterative PR updates (`main.py`, `github/ci_status.py`)
 
 ## Runtime behavior summary
 
@@ -48,7 +52,7 @@ This reflects the code currently in `ai-agent/` on branch `localstate`.
 7. Persist operational state in local `state.json`.
 8. Apply per-repo governance policy for approvals, budgets, and dry-run execution.
 
-## Known gaps after Phase 10
+## Known gaps after Phase 11
 
 1. No authentication/authorization on FastAPI control plane.
 2. UI is polling-based only (no websocket streaming).

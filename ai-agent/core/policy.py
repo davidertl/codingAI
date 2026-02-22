@@ -56,6 +56,23 @@ def _normalize_labels(value):
     return out
 
 
+def _normalize_words(value):
+    if isinstance(value, str):
+        parts = [p.strip().lower() for p in value.split(",") if p.strip()]
+        return parts
+    if not isinstance(value, list):
+        return []
+    out = []
+    seen = set()
+    for item in value:
+        word = str(item).strip().lower()
+        if not word or word in seen:
+            continue
+        seen.add(word)
+        out.append(word)
+    return out
+
+
 def _deep_merge(base, override):
     out = copy.deepcopy(base)
     for key, value in (override or {}).items():
@@ -71,11 +88,14 @@ def _resolve_policy_dir():
     if env_dir:
         return env_dir
 
+    repo_local = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "policies"))
+    if os.path.isdir(repo_local):
+        return repo_local
+
     canonical = "/home/codingai/ai-agent/config/policies"
     if os.path.isdir(canonical):
         return canonical
 
-    repo_local = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "policies"))
     return repo_local
 
 
@@ -138,6 +158,25 @@ def _env_default_policy():
             "template": os.getenv("BRANCH_TEMPLATE", "ai/issue-{issue}-iter-{iteration}").strip()
             or "ai/issue-{issue}-iter-{iteration}"
         },
+        "ci": {
+            "require_green_before_update": _as_bool(
+                os.getenv("CI_REQUIRE_GREEN_BEFORE_UPDATE", "false"),
+                default=False,
+            ),
+            "block_on_pending": _as_bool(os.getenv("CI_BLOCK_ON_PENDING", "true"), default=True),
+            "block_on_failed": _as_bool(os.getenv("CI_BLOCK_ON_FAILED", "true"), default=True),
+            "require_checks_present": _as_bool(os.getenv("CI_REQUIRE_CHECKS_PRESENT", "false"), default=False),
+            "allowed_check_conclusions": _normalize_words(
+                os.getenv("CI_ALLOWED_CHECK_CONCLUSIONS", "success,neutral,skipped")
+            ),
+            "on_error": os.getenv("CI_GATE_ON_ERROR", "allow").strip().lower() or "allow",
+            "retry_after_seconds": _as_int(
+                os.getenv("CI_RETRY_AFTER_SECONDS", "900"),
+                default=900,
+                minimum=60,
+                maximum=7 * 24 * 60 * 60,
+            ),
+        },
     }
 
 
@@ -195,6 +234,26 @@ def _normalize_policy(raw_policy):
     if not template:
         template = "ai/issue-{issue}-iter-{iteration}"
     branch["template"] = template
+
+    ci = merged.setdefault("ci", {})
+    ci["require_green_before_update"] = _as_bool(ci.get("require_green_before_update"), default=False)
+    ci["block_on_pending"] = _as_bool(ci.get("block_on_pending"), default=True)
+    ci["block_on_failed"] = _as_bool(ci.get("block_on_failed"), default=True)
+    ci["require_checks_present"] = _as_bool(ci.get("require_checks_present"), default=False)
+    allowed = _normalize_words(ci.get("allowed_check_conclusions", ["success", "neutral", "skipped"]))
+    if not allowed:
+        allowed = ["success", "neutral", "skipped"]
+    ci["allowed_check_conclusions"] = allowed
+    on_error = str(ci.get("on_error", "allow")).strip().lower()
+    if on_error not in {"allow", "block"}:
+        on_error = "allow"
+    ci["on_error"] = on_error
+    ci["retry_after_seconds"] = _as_int(
+        ci.get("retry_after_seconds", 900),
+        default=900,
+        minimum=60,
+        maximum=7 * 24 * 60 * 60,
+    )
 
     return merged
 

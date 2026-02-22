@@ -9,6 +9,7 @@
 3. For each issue:
    - enforce safety gates (AI Stop, manual approval, cooldown, daily PR cap),
    - load repo policy (budgets, branch template, dry-run mode),
+   - enforce optional CI gate before iterative PR updates,
    - resolve/create iteration branch naming (`ai/issue-<n>-iter-<k>`),
    - generate structured patch ops with LLM (`llm/patch_llm.py`),
    - apply patch locally and run adaptive tests (`core/test_runner.py`),
@@ -23,25 +24,29 @@
    - repo analysis, strategy execution, LLM-guided fallback, memory scoring.
 3. `core/policy.py`
    - policy-file loading, repo override merge, normalization.
-4. `llm/provider.py`
+4. `core/observability.py`
+   - structured event logging and metrics registry/export.
+5. `llm/provider.py`
    - provider selection (`openai/local/auto`), health checks, failover, telemetry.
-5. `llm/strategy_llm.py`
+6. `llm/strategy_llm.py`
    - next-strategy selector with retry/backoff behavior.
-6. `llm/patch_llm.py`
+7. `llm/patch_llm.py`
    - patch and optional test-patch generation with strict schema validation.
-7. `github/app_auth.py`
+8. `github/app_auth.py`
    - GitHub App JWT + installation token lifecycle.
-8. `github/git_api_commit.py`
+9. `github/git_api_commit.py`
    - blob/tree/commit/ref APIs, multi-file tree assembly.
-9. `github/issue_manager.py`
+10. `github/issue_manager.py`
    - issue polling and failure issue creation.
-10. `github/pr_manager.py`
+11. `github/pr_manager.py`
    - PR create/reuse, comment upsert, AI Stop detection.
-11. `github/checks_manager.py`
+12. `github/checks_manager.py`
     - completed check-run publication.
-12. `service/api.py`
+13. `github/ci_status.py`
+    - combined status + check-run aggregation for CI gate decisions.
+14. `service/api.py`
     - FastAPI control plane and worker manager.
-13. `service/static/index.html`
+15. `service/static/index.html`
     - web dashboard for operations and visibility.
 
 ## State model (runtime)
@@ -69,3 +74,4 @@
 4. Optional manual approval can gate all issue execution.
 5. Daily PR cap prevents unbounded PR creation.
 6. Weekly PR cap and dry-run mode are policy-controlled per repository.
+7. CI gate policy can block iterative PR updates when checks are pending/failing.

@@ -1,25 +1,10 @@
-# CodingAI Roadmap (Post Phase 10)
+# CodingAI Roadmap (Post Phase 11)
 
 ## Current baseline
 
-1. Phase 1-10 features are implemented in code (patch pipeline, PR reporting, AI Stop, LLM hardening, policy governance, budgets, dry-run, API, Web UI).
+1. Phase 1-11 features are implemented in code (patch pipeline, PR reporting, AI Stop, LLM hardening, policy governance, budgets, dry-run, observability, CI gate integration, API, Web UI).
 2. Runtime is still single-node and file-state based (`state.json`).
 3. Control plane/UI currently assume trusted network access.
-
-## Phase 11 - Observability and CI coupling
-
-Goal: provide measurable reliability and stronger merge safety.
-
-Scope:
-
-1. Structured event log schema for all major pipeline steps.
-2. Prometheus-style metrics endpoint for API service.
-3. CI/check-state aware follow-up logic before iterative updates.
-
-Acceptance:
-
-1. Error rates and latency are queryable over time.
-2. PR update decisions can include upstream CI status.
 
 ## Phase 12 - Platform hardening + UX
 
@@ -36,7 +21,22 @@ Acceptance:
 1. Control plane is safe to expose behind standard internal ingress.
 2. Operator experience supports multi-repo daily operation.
 
-## Phase 13 - Multi-repo orchestration and quality loops
+## Phase 13 - Durable state and data model upgrades
+
+Goal: reduce operational risk from single-file state persistence.
+
+Scope:
+
+1. Move runtime state from `state.json` to SQLite/Postgres abstraction.
+2. Add migration path and schema versioning.
+3. Keep API compatibility for dashboard/state endpoints.
+
+Acceptance:
+
+1. Restarts are resilient and state is queryable without file parsing.
+2. Multi-process safety improves over JSON-file writes.
+
+## Phase 14 - Multi-repo orchestration and quality loops
 
 Goal: evolve from single-node control to scalable autonomous orchestration.
 

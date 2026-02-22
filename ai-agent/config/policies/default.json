@@ -29,5 +29,14 @@
   },
   "branch": {
     "template": "ai/issue-{issue}-iter-{iteration}"
+  },
+  "ci": {
+    "require_green_before_update": true,
+    "block_on_pending": true,
+    "block_on_failed": true,
+    "require_checks_present": false,
+    "allowed_check_conclusions": ["success", "neutral", "skipped"],
+    "on_error": "allow",
+    "retry_after_seconds": 900
   }
 }

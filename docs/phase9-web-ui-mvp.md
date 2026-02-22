@@ -34,6 +34,9 @@ Provide a lightweight operator dashboard on top of Phase 8 APIs.
    - policy enabled/disabled
    - live vs dry-run mode
    - daily/weekly PR budget counters
+6. CI observability signals:
+   - per-issue CI gate status/reason in tracked issue cards
+   - last processing duration per issue
 
 ## Refresh model
 
