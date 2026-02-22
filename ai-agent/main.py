@@ -1,25 +1,26 @@
-import time
 import json
 import os
+import subprocess
+import time
 
-from github.issue_manager import get_ai_issues, create_issue
-from github.repo_manager import clone_or_update, create_ai_branch
-from github.pr_manager import create_or_get_pr
+from core.test_runner import analyze_repo, run_tests
 from github.git_api_commit import (
-    get_default_branch,
+    build_tree_from_patchops,
+    create_branch,
+    create_commit,
     get_branch_sha,
     get_commit,
-    create_branch,
-    build_tree_from_patchops,
-    create_commit,
+    get_default_branch,
     update_branch,
 )
-from core.test_runner import run_tests, analyze_repo
+from github.issue_manager import create_issue, get_ai_issues
+from github.pr_manager import create_or_get_pr
+from github.repo_manager import clone_or_update
 from llm.patch_llm import propose_patch_ops
 
 AVAILABLE_REPOS = [
     "KRT-leadtool",
-    "KRT-Com_Discord"
+    "KRT-Com_Discord",
 ]
 
 STATE_FILE = "/home/codingai/ai-agent/state.json"
@@ -74,16 +75,62 @@ def _register_failure(state, repo, number, summary, details):
     create_issue(
         repo,
         f"AI Failure for Issue #{number}",
-        f"{summary}\n\n```\n{details}\n```"
+        f"{summary}\n\n```\n{details}\n```",
     )
 
     state[repo][number] = {
         "pr_created": False,
         "last_status": "failed",
         "last_error": details[:2000],
-        "retry_after": int(time.time()) + FAIL_COOLDOWN_SECONDS
+        "retry_after": int(time.time()) + FAIL_COOLDOWN_SECONDS,
     }
     save_state(state)
+
+
+def _checkout_local_branch_at_sha(repo_path, branch, base_sha):
+    subprocess.run(["git", "checkout", "-B", branch, base_sha], cwd=repo_path, check=True)
+    subprocess.run(["git", "reset", "--hard", base_sha], cwd=repo_path, check=True)
+
+
+def _is_within_repo(repo_path, target_path):
+    repo_real = os.path.realpath(repo_path)
+    target_real = os.path.realpath(target_path)
+    return target_real == repo_real or target_real.startswith(repo_real + os.sep)
+
+
+def _apply_patch_ops_locally(repo_path, patch_ops):
+    for op in patch_ops:
+        rel_path = op["path"]
+        action = op["action"]
+        target_path = os.path.join(repo_path, rel_path)
+
+        if not _is_within_repo(repo_path, target_path):
+            raise ValueError(f"Unsafe patch path: {rel_path}")
+
+        if action == "delete":
+            if os.path.isdir(target_path):
+                raise ValueError(f"Delete action points to directory: {rel_path}")
+            if os.path.exists(target_path):
+                os.remove(target_path)
+            continue
+
+        parent = os.path.dirname(target_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
+            f.write(op["content"])
+
+
+def _local_repo_has_changes(repo_path):
+    r = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return bool(r.stdout.strip())
 
 
 def process_issue(repo, issue, state):
@@ -105,87 +152,103 @@ def process_issue(repo, issue, state):
     print(f"\nProcessing issue #{number}")
 
     repo_path = clone_or_update(repo)
-    branch = create_ai_branch(repo_path, int(number))
+    branch = f"ai/issue-{int(number)}"
 
-    success, output = run_tests(repo_path, repo_name=repo, max_attempts=3)
+    try:
+        default_branch = get_default_branch(repo)
+        branch_sha = get_branch_sha(repo, branch)
+        base_sha = branch_sha or get_branch_sha(repo, default_branch)
 
-    if success:
-        print("Tests passed. Generating patch ops and creating commit via GitHub API...")
+        if not base_sha:
+            raise RuntimeError("Could not resolve base SHA for patch pipeline.")
 
-        try:
-            repo_analysis = analyze_repo(repo_path)
-            patch_result = propose_patch_ops(
-                repo_path=repo_path,
-                repo_name=repo,
-                issue=issue,
-                repo_analysis=repo_analysis,
-                max_ops=MAX_PATCH_OPS,
-            )
-            patch_ops = patch_result.get("patch_ops", [])
+        # Ensure local tests run against the exact commit parent we will use for API commit.
+        _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
-            if not patch_ops:
-                reason = patch_result.get("reason", "Model returned no patch operations.")
-                _register_failure(
-                    state,
-                    repo,
-                    number,
-                    f"Patch generation failed for issue #{number}.",
-                    reason,
-                )
-                return
+        repo_analysis = analyze_repo(repo_path)
+        patch_result = propose_patch_ops(
+            repo_path=repo_path,
+            repo_name=repo,
+            issue=issue,
+            repo_analysis=repo_analysis,
+            max_ops=MAX_PATCH_OPS,
+        )
+        patch_ops = patch_result.get("patch_ops", [])
 
-            default_branch = get_default_branch(repo)
-
-            branch_sha = get_branch_sha(repo, branch)
-            if branch_sha:
-                base_sha = branch_sha
-            else:
-                base_sha = get_branch_sha(repo, default_branch)
-                create_branch(repo, branch, base_sha)
-
-            base_commit = get_commit(repo, base_sha)
-            base_tree_sha = base_commit["tree"]["sha"]
-            tree_sha = build_tree_from_patchops(repo, base_tree_sha, patch_ops)
-
-            commit_sha = create_commit(
-                repo,
-                f"AI patch for issue #{number} ({len(patch_ops)} files)",
-                tree_sha,
-                base_sha
-            )
-
-            update_branch(repo, branch, commit_sha)
-
-            pr_url = create_or_get_pr(repo, branch, int(number))
-            print("PR URL:", pr_url)
-
-            state[repo][number] = {
-                "pr_created": True,
-                "last_status": "passed",
-                "patch_ops_count": len(patch_ops),
-                "patch_confidence": patch_result.get("confidence", 0.0),
-                "retry_after": 0
-            }
-            save_state(state)
-        except Exception as e:
+        if not patch_ops:
+            reason = patch_result.get("reason", "Model returned no patch operations.")
             _register_failure(
                 state,
                 repo,
                 number,
-                f"Patch commit pipeline failed for issue #{number}.",
-                str(e),
+                f"Patch generation failed for issue #{number}.",
+                reason,
             )
+            return
 
-    else:
-        print("Tests failed.")
-        print(output)
+        _apply_patch_ops_locally(repo_path, patch_ops)
 
+        if not _local_repo_has_changes(repo_path):
+            _register_failure(
+                state,
+                repo,
+                number,
+                f"Patch ops produced no effective file changes for issue #{number}.",
+                patch_result.get("reason", ""),
+            )
+            return
+
+        print("Patch applied locally. Running tests on patched repository...")
+        success, output = run_tests(repo_path, repo_name=repo, max_attempts=3)
+
+        if not success:
+            _register_failure(
+                state,
+                repo,
+                number,
+                f"Patched repository failed tests for issue #{number}.",
+                output,
+            )
+            return
+
+        print("Patched tests passed. Creating commit via GitHub API...")
+
+        # Create branch remotely only after patch and tests passed.
+        if not branch_sha:
+            create_branch(repo, branch, base_sha)
+
+        base_commit = get_commit(repo, base_sha)
+        base_tree_sha = base_commit["tree"]["sha"]
+        tree_sha = build_tree_from_patchops(repo, base_tree_sha, patch_ops)
+
+        commit_sha = create_commit(
+            repo,
+            f"AI patch for issue #{number} ({len(patch_ops)} files)",
+            tree_sha,
+            base_sha,
+        )
+
+        update_branch(repo, branch, commit_sha)
+
+        pr_url = create_or_get_pr(repo, branch, int(number))
+        print("PR URL:", pr_url)
+
+        state[repo][number] = {
+            "pr_created": True,
+            "last_status": "passed",
+            "patch_ops_count": len(patch_ops),
+            "patch_confidence": patch_result.get("confidence", 0.0),
+            "retry_after": 0,
+        }
+        save_state(state)
+
+    except Exception as e:
         _register_failure(
             state,
             repo,
             number,
-            f"Adaptive test runner exhausted strategies for issue #{number}.",
-            output,
+            f"Patch pipeline failed for issue #{number}.",
+            str(e),
         )
 
 
