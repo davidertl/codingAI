@@ -145,6 +145,16 @@ def _env_default_policy():
             "auto_generate_test_patches": _as_bool(os.getenv("AUTO_GENERATE_TEST_PATCHES", "false"), default=False),
             "max_test_patch_ops": _as_int(os.getenv("MAX_TEST_PATCH_OPS", "6"), default=6, minimum=0, maximum=200),
             "max_total_patch_ops": _as_int(os.getenv("MAX_TOTAL_PATCH_OPS", "30"), default=30, minimum=1, maximum=1000),
+            "test_patch_on_failure_only": _as_bool(
+                os.getenv("TEST_PATCH_ON_FAILURE_ONLY", "true"),
+                default=True,
+            ),
+            "test_patch_min_confidence": _as_float(
+                os.getenv("TEST_PATCH_MIN_CONFIDENCE", "0.55"),
+                default=0.55,
+                minimum=0.0,
+                maximum=1.0,
+            ),
         },
         "strategy": {
             "switch_confidence_threshold": _as_float(
@@ -152,7 +162,31 @@ def _env_default_policy():
                 default=0.65,
                 minimum=0.0,
                 maximum=1.0,
-            )
+            ),
+            "max_attempts": _as_int(
+                os.getenv("STRATEGY_MAX_ATTEMPTS", "3"),
+                default=3,
+                minimum=1,
+                maximum=12,
+            ),
+            "quarantine_threshold": _as_int(
+                os.getenv("STRATEGY_QUARANTINE_THRESHOLD", "3"),
+                default=3,
+                minimum=1,
+                maximum=20,
+            ),
+            "quarantine_seconds": _as_int(
+                os.getenv("STRATEGY_QUARANTINE_SECONDS", str(12 * 60 * 60)),
+                default=12 * 60 * 60,
+                minimum=0,
+                maximum=30 * 24 * 60 * 60,
+            ),
+            "memory_half_life_seconds": _as_int(
+                os.getenv("STRATEGY_MEMORY_HALF_LIFE_SECONDS", str(7 * 24 * 60 * 60)),
+                default=7 * 24 * 60 * 60,
+                minimum=0,
+                maximum=365 * 24 * 60 * 60,
+            ),
         },
         "branch": {
             "template": os.getenv("BRANCH_TEMPLATE", "ai/issue-{issue}-iter-{iteration}").strip()
@@ -218,6 +252,13 @@ def _normalize_policy(raw_policy):
         minimum=1,
         maximum=1000,
     )
+    patch["test_patch_on_failure_only"] = _as_bool(patch.get("test_patch_on_failure_only"), default=True)
+    patch["test_patch_min_confidence"] = _as_float(
+        patch.get("test_patch_min_confidence", 0.55),
+        default=0.55,
+        minimum=0.0,
+        maximum=1.0,
+    )
     if patch["max_total_patch_ops"] < patch["max_patch_ops"]:
         patch["max_total_patch_ops"] = patch["max_patch_ops"]
 
@@ -227,6 +268,30 @@ def _normalize_policy(raw_policy):
         default=0.65,
         minimum=0.0,
         maximum=1.0,
+    )
+    strategy["max_attempts"] = _as_int(
+        strategy.get("max_attempts", 3),
+        default=3,
+        minimum=1,
+        maximum=12,
+    )
+    strategy["quarantine_threshold"] = _as_int(
+        strategy.get("quarantine_threshold", 3),
+        default=3,
+        minimum=1,
+        maximum=20,
+    )
+    strategy["quarantine_seconds"] = _as_int(
+        strategy.get("quarantine_seconds", 12 * 60 * 60),
+        default=12 * 60 * 60,
+        minimum=0,
+        maximum=30 * 24 * 60 * 60,
+    )
+    strategy["memory_half_life_seconds"] = _as_int(
+        strategy.get("memory_half_life_seconds", 7 * 24 * 60 * 60),
+        default=7 * 24 * 60 * 60,
+        minimum=0,
+        maximum=365 * 24 * 60 * 60,
     )
 
     branch = merged.setdefault("branch", {})

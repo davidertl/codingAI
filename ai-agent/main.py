@@ -458,6 +458,7 @@ def _merge_patch_ops(base_ops, extra_ops, *, max_ops):
     merged = list(base_ops)
     seen_paths = {op["path"] for op in merged}
     added = 0
+    added_ops = []
 
     for op in extra_ops:
         if len(merged) >= max_ops:
@@ -466,10 +467,37 @@ def _merge_patch_ops(base_ops, extra_ops, *, max_ops):
         if path in seen_paths:
             continue
         merged.append(op)
+        added_ops.append(op)
         seen_paths.add(path)
         added += 1
 
-    return merged, added
+    return merged, added, added_ops
+
+
+def _merge_test_reports(primary_report, fallback_report, *, fallback_label):
+    p = primary_report if isinstance(primary_report, dict) else {}
+    f = fallback_report if isinstance(fallback_report, dict) else {}
+
+    merged = dict(f)
+    merged_attempts = []
+
+    for a in p.get("attempts", []):
+        item = dict(a)
+        item["stage"] = "base_patch"
+        merged_attempts.append(item)
+
+    for a in f.get("attempts", []):
+        item = dict(a)
+        item["stage"] = fallback_label
+        merged_attempts.append(item)
+
+    if merged_attempts:
+        merged["attempts"] = merged_attempts
+    merged["base_patch_result"] = p.get("result")
+    merged["fallback_stage"] = fallback_label
+    merged["fallback_result"] = f.get("result")
+    merged["fallback_applied"] = True
+    return merged
 
 
 def _build_pr_test_comment(issue_number, test_report, test_output, patch_result, patch_ops_count):
@@ -863,38 +891,19 @@ def process_issue(repo, issue, state, policy=None):
             )
             return
 
-        if bool(patch_policy.get("auto_generate_test_patches", False)):
-            test_patch_started = time.time()
-            test_patch_result = propose_test_patch_ops(
-                repo_path=repo_path,
-                repo_name=repo,
-                issue=issue,
-                repo_analysis=repo_analysis,
-                base_patch_ops=patch_ops,
-                max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
-            )
-            test_patch_ops = test_patch_result.get("patch_ops", [])
-            if test_patch_ops:
-                test_patch_conf = float(test_patch_result.get("confidence", 0.0) or 0.0)
-                patch_ops, added = _merge_patch_ops(
-                    patch_ops,
-                    test_patch_ops,
-                    max_ops=int(patch_policy.get("max_total_patch_ops", 30)),
-                )
-                patch_result["test_patch_ops_added"] = added
-                patch_result["test_patch_confidence"] = test_patch_conf
-                patch_result["test_patch_reason"] = test_patch_result.get("reason", "")
-                print(
-                    f"Auto-generated test patch ops added: {added} "
-                    f"(candidate={len(test_patch_ops)} conf={test_patch_conf:.2f})"
-                )
-            else:
-                print(f"No test patch ops generated: {test_patch_result.get('reason', '')}")
-            observe_duration_ms(
-                "codingai_test_patch_generation_duration_ms",
-                _elapsed_ms(test_patch_started) or 0,
-                labels={"repo": repo},
-            )
+        auto_test_patch_enabled = bool(patch_policy.get("auto_generate_test_patches", False))
+        test_patch_on_failure_only = bool(patch_policy.get("test_patch_on_failure_only", True))
+        try:
+            test_patch_min_confidence = float(patch_policy.get("test_patch_min_confidence", 0.55))
+        except Exception:
+            test_patch_min_confidence = 0.55
+        test_patch_min_confidence = max(0.0, min(1.0, test_patch_min_confidence))
+
+        patch_result["test_patch_ops_added"] = 0
+        patch_result["test_patch_confidence"] = 0.0
+        patch_result["test_patch_reason"] = ""
+        patch_result["test_patch_applied"] = False
+        patch_result["test_patch_min_confidence"] = test_patch_min_confidence
 
         _apply_patch_ops_locally(repo_path, patch_ops)
         inc_counter("codingai_patch_ops_total", value=len(patch_ops), labels={"repo": repo})
@@ -913,13 +922,21 @@ def process_issue(repo, issue, state, policy=None):
 
         print("Patch applied locally. Running tests on patched repository...")
         confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
+        strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
+        strategy_quarantine_threshold = max(1, int(strategy_policy.get("quarantine_threshold", 3)))
+        strategy_quarantine_seconds = max(0, int(strategy_policy.get("quarantine_seconds", 12 * 60 * 60)))
+        strategy_memory_half_life = max(0, int(strategy_policy.get("memory_half_life_seconds", 7 * 24 * 60 * 60)))
+
         tests_started = time.time()
         success, output, test_report = run_tests(
             repo_path,
             repo_name=repo,
-            max_attempts=3,
+            max_attempts=strategy_max_attempts,
             strategy_memory=repo_strategy_memory,
             min_confidence_for_switch=confidence_threshold,
+            strategy_quarantine_threshold=strategy_quarantine_threshold,
+            strategy_quarantine_seconds=strategy_quarantine_seconds,
+            strategy_memory_half_life_seconds=strategy_memory_half_life,
         )
         tests_duration_ms = _elapsed_ms(tests_started)
         attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else 0
@@ -938,6 +955,131 @@ def process_issue(repo, issue, state, policy=None):
             duration_ms=tests_duration_ms,
             data={"attempts": attempts_count},
         )
+
+        if (
+            not success
+            and auto_test_patch_enabled
+            and test_patch_on_failure_only
+        ):
+            fallback_started = time.time()
+            record_event(
+                "test_patch_fallback_started",
+                repo=repo,
+                issue_number=number,
+                status="started",
+                data={"base_attempts": attempts_count},
+            )
+            test_patch_started = time.time()
+            test_patch_result = propose_test_patch_ops(
+                repo_path=repo_path,
+                repo_name=repo,
+                issue=issue,
+                repo_analysis=repo_analysis,
+                base_patch_ops=patch_ops,
+                max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
+            )
+            test_patch_duration_ms = _elapsed_ms(test_patch_started)
+            observe_duration_ms(
+                "codingai_test_patch_generation_duration_ms",
+                test_patch_duration_ms or 0,
+                labels={"repo": repo},
+            )
+            test_patch_ops = test_patch_result.get("patch_ops", [])
+            test_patch_conf = float(test_patch_result.get("confidence", 0.0) or 0.0)
+            test_patch_reason = str(test_patch_result.get("reason", ""))
+            patch_result["test_patch_confidence"] = test_patch_conf
+            patch_result["test_patch_reason"] = test_patch_reason[:500]
+
+            if test_patch_ops and test_patch_conf >= test_patch_min_confidence:
+                patch_ops, added, added_ops = _merge_patch_ops(
+                    patch_ops,
+                    test_patch_ops,
+                    max_ops=int(patch_policy.get("max_total_patch_ops", 30)),
+                )
+                patch_result["test_patch_ops_added"] = added
+                if added > 0:
+                    _apply_patch_ops_locally(repo_path, added_ops)
+                    patch_result["test_patch_applied"] = True
+                    inc_counter("codingai_patch_ops_total", value=added, labels={"repo": repo})
+                    print(
+                        f"Applied staged test patch ops: {added} "
+                        f"(candidate={len(test_patch_ops)} conf={test_patch_conf:.2f})"
+                    )
+
+                    fallback_strategy_memory = test_report.get("strategy_memory_update", repo_strategy_memory)
+                    tests_fallback_started = time.time()
+                    fallback_success, fallback_output, fallback_report = run_tests(
+                        repo_path,
+                        repo_name=repo,
+                        max_attempts=strategy_max_attempts,
+                        strategy_memory=fallback_strategy_memory,
+                        min_confidence_for_switch=confidence_threshold,
+                        strategy_quarantine_threshold=strategy_quarantine_threshold,
+                        strategy_quarantine_seconds=strategy_quarantine_seconds,
+                        strategy_memory_half_life_seconds=strategy_memory_half_life,
+                    )
+                    fallback_tests_duration_ms = _elapsed_ms(tests_fallback_started)
+                    fallback_attempts = len(fallback_report.get("attempts", [])) if isinstance(fallback_report, dict) else 0
+                    observe_duration_ms(
+                        "codingai_test_execution_duration_ms",
+                        fallback_tests_duration_ms or 0,
+                        labels={"repo": repo, "result": "passed" if fallback_success else "failed"},
+                    )
+                    inc_counter(
+                        "codingai_test_runs_total",
+                        labels={"repo": repo, "result": "passed" if fallback_success else "failed"},
+                    )
+                    inc_counter("codingai_test_attempts_total", value=max(1, fallback_attempts), labels={"repo": repo})
+                    record_event(
+                        "tests_finished",
+                        repo=repo,
+                        issue_number=number,
+                        status="passed" if fallback_success else "failed",
+                        duration_ms=fallback_tests_duration_ms,
+                        data={"attempts": fallback_attempts, "stage": "test_patch_fallback"},
+                    )
+
+                    success = fallback_success
+                    output = fallback_output
+                    test_report = _merge_test_reports(
+                        test_report,
+                        fallback_report,
+                        fallback_label="test_patch_fallback",
+                    )
+                    attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else attempts_count
+                    record_event(
+                        "test_patch_fallback_finished",
+                        repo=repo,
+                        issue_number=number,
+                        status="applied",
+                        duration_ms=_elapsed_ms(fallback_started),
+                        data={"added_ops": added, "confidence": test_patch_conf, "fallback_success": fallback_success},
+                    )
+                else:
+                    record_event(
+                        "test_patch_fallback_finished",
+                        repo=repo,
+                        issue_number=number,
+                        status="skipped",
+                        duration_ms=_elapsed_ms(fallback_started),
+                        data={"reason": "no_unique_test_patch_ops", "confidence": test_patch_conf},
+                    )
+            else:
+                skip_reason = "low_confidence" if test_patch_ops else "no_test_patch_ops"
+                record_event(
+                    "test_patch_fallback_finished",
+                    repo=repo,
+                    issue_number=number,
+                    status="skipped",
+                    duration_ms=_elapsed_ms(fallback_started),
+                    data={
+                        "reason": skip_reason,
+                        "confidence": test_patch_conf,
+                        "min_confidence": test_patch_min_confidence,
+                        "model_reason": test_patch_reason[:200],
+                    },
+                )
+
         _apply_strategy_memory_update(state, repo, test_report)
 
         if not success:
@@ -956,7 +1098,13 @@ def process_issue(repo, issue, state, policy=None):
             issue_state["active_branch"] = branch
             issue_state["patch_ops_count"] = len(patch_ops)
             issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
+            issue_state["test_patch_applied"] = bool(patch_result.get("test_patch_applied", False))
+            issue_state["test_patch_ops_added"] = int(patch_result.get("test_patch_ops_added", 0))
+            issue_state["test_patch_confidence"] = float(patch_result.get("test_patch_confidence", 0.0))
             issue_state["strategy_confidence_threshold"] = confidence_threshold
+            issue_state["strategy_max_attempts"] = strategy_max_attempts
+            issue_state["strategy_quarantine_threshold"] = strategy_quarantine_threshold
+            issue_state["strategy_quarantine_seconds"] = strategy_quarantine_seconds
             issue_state["dry_run_source_issue_updated_at"] = str(issue.get("updated_at", ""))
             issue_state["retry_after"] = 0
             issue_state["dry_run_actions"] = {
@@ -1062,7 +1210,13 @@ def process_issue(repo, issue, state, policy=None):
         issue_state["pr_created"] = True
         issue_state["patch_ops_count"] = len(patch_ops)
         issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
+        issue_state["test_patch_applied"] = bool(patch_result.get("test_patch_applied", False))
+        issue_state["test_patch_ops_added"] = int(patch_result.get("test_patch_ops_added", 0))
+        issue_state["test_patch_confidence"] = float(patch_result.get("test_patch_confidence", 0.0))
         issue_state["strategy_confidence_threshold"] = confidence_threshold
+        issue_state["strategy_max_attempts"] = strategy_max_attempts
+        issue_state["strategy_quarantine_threshold"] = strategy_quarantine_threshold
+        issue_state["strategy_quarantine_seconds"] = strategy_quarantine_seconds
         issue_state["pr_number"] = pr_info["number"]
         issue_state["pr_url"] = pr_info["url"]
         issue_state["check_run_url"] = check_run_url

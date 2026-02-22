@@ -164,7 +164,7 @@ class WorkerManager:
 
 
 manager = WorkerManager()
-app = FastAPI(title="CodingAI Control Plane", version="0.3.0")
+app = FastAPI(title="CodingAI Control Plane", version="0.4.0")
 app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
@@ -192,7 +192,13 @@ def _repo_state_summary(repo: str) -> list[dict]:
                 "report_comment_id": value.get("report_comment_id"),
                 "patch_ops_count": value.get("patch_ops_count"),
                 "patch_confidence": value.get("patch_confidence"),
+                "test_patch_applied": bool(value.get("test_patch_applied")),
+                "test_patch_ops_added": value.get("test_patch_ops_added"),
+                "test_patch_confidence": value.get("test_patch_confidence"),
                 "strategy_confidence_threshold": value.get("strategy_confidence_threshold"),
+                "strategy_max_attempts": value.get("strategy_max_attempts"),
+                "strategy_quarantine_threshold": value.get("strategy_quarantine_threshold"),
+                "strategy_quarantine_seconds": value.get("strategy_quarantine_seconds"),
                 "retry_after": value.get("retry_after", 0),
                 "pending_manual_approval": bool(value.get("pending_manual_approval")),
                 "ai_stopped": bool(value.get("ai_stopped")),

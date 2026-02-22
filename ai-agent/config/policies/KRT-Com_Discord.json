@@ -4,6 +4,9 @@
     "max_per_week": 10
   },
   "strategy": {
-    "switch_confidence_threshold": 0.7
+    "switch_confidence_threshold": 0.7,
+    "max_attempts": 4,
+    "quarantine_threshold": 3,
+    "quarantine_seconds": 43200
   }
 }

@@ -63,6 +63,7 @@ Use policy files for:
 2. daily/weekly PR budgets
 3. branch naming template
 4. dry-run mode (`"dry_run": true`)
+5. autonomy tuning (`strategy.*` and `patch.test_patch_*`)
 
 ## Health and quick checks
 
@@ -97,6 +98,24 @@ curl -s "http://127.0.0.1:8000/events?limit=50&repo=KRT-leadtool"
 
 ```bash
 curl -s http://127.0.0.1:8000/ci/KRT-leadtool/1
+```
+
+### Autonomy policy quick example
+
+```json
+{
+  "patch": {
+    "auto_generate_test_patches": true,
+    "test_patch_on_failure_only": true,
+    "test_patch_min_confidence": 0.6
+  },
+  "strategy": {
+    "max_attempts": 4,
+    "quarantine_threshold": 3,
+    "quarantine_seconds": 43200,
+    "memory_half_life_seconds": 604800
+  }
+}
 ```
 
 ### Run one cycle

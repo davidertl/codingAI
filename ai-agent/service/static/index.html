@@ -298,7 +298,7 @@
     <section class="panel">
       <div class="hd">
         <h1 class="title">CodingAI Dashboard</h1>
-        <div class="subtitle">Phase 11: queue, runtime status, controls, governance, CI and observability</div>
+        <div class="subtitle">Phase 12: autonomy tuning, staged fallback, governance, CI and observability</div>
         <div class="kpis">
           <div class="kpi">
             <div class="k">LLM</div>
@@ -519,6 +519,8 @@
         const ciText = ciGate.checked_at
           ? `ci_gate=${ciDecision.reason || ciGate.error || "ok"}`
           : "ci_gate=not_checked";
+        const testPatch = `test_patch=${item.test_patch_applied ? "applied" : "no"}(+${item.test_patch_ops_added ?? 0}, conf=${item.test_patch_confidence ?? "-"})`;
+        const strategyCfg = `strategy(max=${item.strategy_max_attempts ?? "-"}, q=${item.strategy_quarantine_threshold ?? "-"}/${item.strategy_quarantine_seconds ?? "-"})`;
         const err = item.last_error ? `<div class="mono">error: ${String(item.last_error).slice(0, 140)}</div>` : "";
         return `
           <article class="issue">
@@ -528,6 +530,8 @@
             </div>
             <div class="mono">branch: ${item.active_branch || "-"}</div>
             <div class="mono">patch_ops=${item.patch_ops_count ?? "-"} patch_conf=${item.patch_confidence ?? "-"}</div>
+            <div class="mono">${testPatch}</div>
+            <div class="mono">${strategyCfg}</div>
             <div class="mono">last_duration=${lastDuration} ${ciText}</div>
             <div class="mono">retry_after=${retry}</div>
             <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>

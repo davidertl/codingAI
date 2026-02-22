@@ -22,10 +22,16 @@
     "max_patch_ops": 20,
     "auto_generate_test_patches": false,
     "max_test_patch_ops": 6,
-    "max_total_patch_ops": 30
+    "max_total_patch_ops": 30,
+    "test_patch_on_failure_only": true,
+    "test_patch_min_confidence": 0.55
   },
   "strategy": {
-    "switch_confidence_threshold": 0.65
+    "switch_confidence_threshold": 0.65,
+    "max_attempts": 3,
+    "quarantine_threshold": 3,
+    "quarantine_seconds": 43200,
+    "memory_half_life_seconds": 604800
   },
   "branch": {
     "template": "ai/issue-{issue}-iter-{iteration}"

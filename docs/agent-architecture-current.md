@@ -12,6 +12,7 @@
    - enforce optional CI gate before iterative PR updates,
    - resolve/create iteration branch naming (`ai/issue-<n>-iter-<k>`),
    - generate structured patch ops with LLM (`llm/patch_llm.py`),
+   - run staged test execution with optional test-patch fallback,
    - apply patch locally and run adaptive tests (`core/test_runner.py`),
    - commit via Git Data API only on pass (`github/git_api_commit.py`) unless dry-run,
    - create/reuse PR, upsert PR report comment, optionally publish check-run.
@@ -26,27 +27,30 @@
    - policy-file loading, repo override merge, normalization.
 4. `core/observability.py`
    - structured event logging and metrics registry/export.
-5. `llm/provider.py`
-   - provider selection (`openai/local/auto`), health checks, failover, telemetry.
-6. `llm/strategy_llm.py`
-   - next-strategy selector with retry/backoff behavior.
-7. `llm/patch_llm.py`
-   - patch and optional test-patch generation with strict schema validation.
-8. `github/app_auth.py`
-   - GitHub App JWT + installation token lifecycle.
-9. `github/git_api_commit.py`
-   - blob/tree/commit/ref APIs, multi-file tree assembly.
-10. `github/issue_manager.py`
-   - issue polling and failure issue creation.
-11. `github/pr_manager.py`
-   - PR create/reuse, comment upsert, AI Stop detection.
-12. `github/checks_manager.py`
+5. `core/test_runner.py` autonomy internals include:
+   - strategy memory scoring with recency decay
+   - strategy quarantine cooldown behavior
+6. `llm/provider.py`
+    - provider selection (`openai/local/auto`), health checks, failover, telemetry.
+7. `llm/strategy_llm.py`
+    - next-strategy selector with retry/backoff behavior.
+8. `llm/patch_llm.py`
+    - patch and optional test-patch generation with strict schema validation.
+9. `github/app_auth.py`
+    - GitHub App JWT + installation token lifecycle.
+10. `github/git_api_commit.py`
+    - blob/tree/commit/ref APIs, multi-file tree assembly.
+11. `github/issue_manager.py`
+    - issue polling and failure issue creation.
+12. `github/pr_manager.py`
+    - PR create/reuse, comment upsert, AI Stop detection.
+13. `github/checks_manager.py`
     - completed check-run publication.
-13. `github/ci_status.py`
+14. `github/ci_status.py`
     - combined status + check-run aggregation for CI gate decisions.
-14. `service/api.py`
+15. `service/api.py`
     - FastAPI control plane and worker manager.
-15. `service/static/index.html`
+16. `service/static/index.html`
     - web dashboard for operations and visibility.
 
 ## State model (runtime)

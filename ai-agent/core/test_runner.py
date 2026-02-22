@@ -72,6 +72,13 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def _safe_int(v, default=0):
+    try:
+        return int(v)
+    except Exception:
+        return int(default)
+
+
 def _normalize_strategy_memory(strategy_memory: dict | None) -> dict:
     if not isinstance(strategy_memory, dict):
         return {}
@@ -87,29 +94,50 @@ def _normalize_strategy_memory(strategy_memory: dict | None) -> dict:
             "last_result": str(stats.get("last_result", "")),
             "last_error_fingerprint": str(stats.get("last_error_fingerprint", "")),
             "updated_at": int(stats.get("updated_at", 0)),
+            "consecutive_failures": int(stats.get("consecutive_failures", 0)),
+            "cooldown_until": int(stats.get("cooldown_until", 0)),
+            "last_success_at": int(stats.get("last_success_at", 0)),
+            "last_failure_at": int(stats.get("last_failure_at", 0)),
         }
     return normalized
 
 
-def _strategy_memory_score(strategy_id: str, memory: dict) -> float:
+def _strategy_memory_score(strategy_id: str, memory: dict, *, now_ts: int, half_life_seconds: int) -> float:
     stats = memory.get(strategy_id, {})
     runs = int(stats.get("runs", 0))
     successes = int(stats.get("successes", 0))
+    consecutive_failures = int(stats.get("consecutive_failures", 0))
+    updated_at = int(stats.get("updated_at", 0))
 
     # Laplace-smoothed success rate, slightly favor proven history.
     success_rate = (successes + 1.0) / (runs + 2.0)
     experience_bonus = min(runs, 20) * 0.01
-    return success_rate + experience_bonus
+
+    decay = 1.0
+    if half_life_seconds > 0 and updated_at > 0:
+        age = max(0, now_ts - updated_at)
+        decay = 0.5 ** (age / float(max(1, half_life_seconds)))
+
+    failure_penalty = min(consecutive_failures, 6) * 0.08
+    return (success_rate * decay) + experience_bonus - failure_penalty
 
 
-def _pick_by_memory(remaining: list, memory: dict):
+def _is_quarantined(strategy_id: str, memory: dict, now_ts: int) -> bool:
+    stats = memory.get(strategy_id, {})
+    cooldown_until = int(stats.get("cooldown_until", 0))
+    return cooldown_until > now_ts
+
+
+def _pick_by_memory(remaining: list, memory: dict, *, now_ts: int, half_life_seconds: int):
     with_history = []
     for i, s in enumerate(remaining):
         sid = s["id"]
+        if _is_quarantined(sid, memory, now_ts):
+            continue
         runs = int(memory.get(sid, {}).get("runs", 0))
         if runs <= 0:
             continue
-        score = _strategy_memory_score(sid, memory)
+        score = _strategy_memory_score(sid, memory, now_ts=now_ts, half_life_seconds=half_life_seconds)
         with_history.append((score, -i, sid))
 
     if not with_history:
@@ -126,7 +154,16 @@ def _pick_by_memory(remaining: list, memory: dict):
     return remaining.pop(idx), best_score
 
 
-def _update_strategy_memory(memory: dict, strategy_id: str, ok: bool, error_text: str):
+def _update_strategy_memory(
+    memory: dict,
+    strategy_id: str,
+    ok: bool,
+    error_text: str,
+    *,
+    quarantine_threshold: int,
+    quarantine_seconds: int,
+):
+    now_ts = int(time.time())
     stats = memory.setdefault(
         strategy_id,
         {
@@ -136,6 +173,10 @@ def _update_strategy_memory(memory: dict, strategy_id: str, ok: bool, error_text
             "last_result": "",
             "last_error_fingerprint": "",
             "updated_at": 0,
+            "consecutive_failures": 0,
+            "cooldown_until": 0,
+            "last_success_at": 0,
+            "last_failure_at": 0,
         },
     )
 
@@ -144,11 +185,22 @@ def _update_strategy_memory(memory: dict, strategy_id: str, ok: bool, error_text
         stats["successes"] += 1
         stats["last_result"] = "passed"
         stats["last_error_fingerprint"] = ""
+        stats["consecutive_failures"] = 0
+        stats["cooldown_until"] = 0
+        stats["last_success_at"] = now_ts
     else:
         stats["failures"] += 1
         stats["last_result"] = "failed"
         stats["last_error_fingerprint"] = _fingerprint(error_text)
-    stats["updated_at"] = int(time.time())
+        stats["consecutive_failures"] = int(stats.get("consecutive_failures", 0)) + 1
+        stats["last_failure_at"] = now_ts
+        if (
+            quarantine_threshold > 0
+            and quarantine_seconds > 0
+            and int(stats.get("consecutive_failures", 0)) >= int(quarantine_threshold)
+        ):
+            stats["cooldown_until"] = max(int(stats.get("cooldown_until", 0)), now_ts + int(quarantine_seconds))
+    stats["updated_at"] = now_ts
 
 
 def analyze_repo(repo_path: str) -> dict:
@@ -355,6 +407,9 @@ def run_tests(
     max_attempts: int = 3,
     strategy_memory: dict | None = None,
     min_confidence_for_switch: float = 0.65,
+    strategy_quarantine_threshold: int = 3,
+    strategy_quarantine_seconds: int = 12 * 60 * 60,
+    strategy_memory_half_life_seconds: int = 7 * 24 * 60 * 60,
 ):
     """
     LLM-guided adaptive runner:
@@ -368,14 +423,27 @@ def run_tests(
     """
     repo_analysis = analyze_repo(repo_path)
     memory = _normalize_strategy_memory(strategy_memory)
+    now_ts = int(time.time())
+    max_attempts = max(1, int(max_attempts))
+    strategy_quarantine_threshold = max(1, _safe_int(strategy_quarantine_threshold, 3))
+    strategy_quarantine_seconds = max(0, _safe_int(strategy_quarantine_seconds, 12 * 60 * 60))
+    strategy_memory_half_life_seconds = max(0, _safe_int(strategy_memory_half_life_seconds, 7 * 24 * 60 * 60))
 
     report = {
         "result": "failed",
         "attempts": [],
+        "llm_decisions": [],
+        "max_attempts": max_attempts,
         "selected_strategy": None,
         "selected_strategy_confidence": 0.0,
         "selected_strategy_reason": "",
         "confidence_threshold_used": float(min_confidence_for_switch),
+        "quarantined_strategies": [],
+        "memory_policy": {
+            "quarantine_threshold": strategy_quarantine_threshold,
+            "quarantine_seconds": strategy_quarantine_seconds,
+            "half_life_seconds": strategy_memory_half_life_seconds,
+        },
     }
 
     # Build candidate strategy list based on what we actually found
@@ -408,9 +476,37 @@ def run_tests(
     attempted = []
     last_error = ""
 
+    available = []
+    quarantined = []
+    for s in strategies:
+        sid = s["id"]
+        cooldown_until = int(memory.get(sid, {}).get("cooldown_until", 0))
+        if cooldown_until > now_ts:
+            quarantined.append(
+                {
+                    "strategy_id": sid,
+                    "cooldown_until": cooldown_until,
+                }
+            )
+            continue
+        available.append(s)
+    report["quarantined_strategies"] = quarantined
+
+    # If all strategies are quarantined, we still proceed deterministically to avoid hard deadlocks.
+    remaining = available[:] if available else strategies[:]
+    if not remaining:
+        out = "No remaining strategy candidates after quarantine filtering."
+        report["final_error_fingerprint"] = _fingerprint(out)
+        report["strategy_memory_update"] = memory
+        return False, out, report
+
     # First pick: memory-biased if historical data exists; otherwise deterministic list order.
-    remaining = strategies[:]
-    memory_pick, memory_score = _pick_by_memory(remaining, memory)
+    memory_pick, memory_score = _pick_by_memory(
+        remaining,
+        memory,
+        now_ts=now_ts,
+        half_life_seconds=strategy_memory_half_life_seconds,
+    )
     if memory_pick is not None:
         current = memory_pick
         last_selection_reason = f"Memory-biased selection (score={memory_score:.3f})."
@@ -442,7 +538,14 @@ def run_tests(
         print(out)
 
         relevant_error = _extract_relevant_error_lines(out)
-        _update_strategy_memory(memory, current["id"], ok, relevant_error)
+        _update_strategy_memory(
+            memory,
+            current["id"],
+            ok,
+            relevant_error,
+            quarantine_threshold=strategy_quarantine_threshold,
+            quarantine_seconds=strategy_quarantine_seconds,
+        )
 
         attempt_entry = {
             "attempt": attempt,
@@ -479,6 +582,15 @@ def run_tests(
         chosen_id = decision.get("next_strategy_id")
         llm_confidence = _safe_float(decision.get("confidence", 0.0), default=0.0)
         llm_reason = str(decision.get("reason", ""))[:500]
+        report["llm_decisions"].append(
+            {
+                "attempt": attempt,
+                "chosen_id": chosen_id,
+                "confidence": llm_confidence,
+                "reason": llm_reason,
+                "retry_count": _safe_int(decision.get("retry_count", 0), 0),
+            }
+        )
         print(
             f"LLM decision: next={chosen_id} conf={llm_confidence} "
             f"retries={decision.get('retry_count', 0)} reason={llm_reason}"
@@ -493,7 +605,12 @@ def run_tests(
             last_selection_confidence = llm_confidence
             continue
 
-        memory_pick, memory_score = _pick_by_memory(remaining, memory)
+        memory_pick, memory_score = _pick_by_memory(
+            remaining,
+            memory,
+            now_ts=int(time.time()),
+            half_life_seconds=strategy_memory_half_life_seconds,
+        )
         if memory_pick is not None:
             current = memory_pick
             last_selection_reason = (

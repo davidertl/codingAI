@@ -69,3 +69,7 @@ From `ai-agent/service/api.py`:
 4. `GET /ci/{repo}/{pr_number}`
 
 `GET /repo/{repo}/summary` now includes CI gate state in tracked issue data.
+
+## Phase 12 dependency note
+
+Phase 12 extends runtime autonomy (strategy-memory decay/quarantine and staged test-patch fallback). Observability added here captures those additional events/metrics as well.

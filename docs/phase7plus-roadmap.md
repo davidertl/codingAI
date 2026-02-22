@@ -1,12 +1,12 @@
-# CodingAI Roadmap (Post Phase 11)
+# CodingAI Roadmap (Post Phase 12)
 
 ## Current baseline
 
-1. Phase 1-11 features are implemented in code (patch pipeline, PR reporting, AI Stop, LLM hardening, policy governance, budgets, dry-run, observability, CI gate integration, API, Web UI).
+1. Phase 1-12 features are implemented in code (patch pipeline, PR reporting, AI Stop, LLM hardening, policy governance, budgets, dry-run, observability, CI gate integration, advanced autonomy tuning, API, Web UI).
 2. Runtime is still single-node and file-state based (`state.json`).
 3. Control plane/UI currently assume trusted network access.
 
-## Phase 12 - Platform hardening + UX
+## Phase 13 - Platform hardening + UX
 
 Goal: prepare for broader usage.
 
@@ -21,7 +21,7 @@ Acceptance:
 1. Control plane is safe to expose behind standard internal ingress.
 2. Operator experience supports multi-repo daily operation.
 
-## Phase 13 - Durable state and data model upgrades
+## Phase 14 - Durable state and data model upgrades
 
 Goal: reduce operational risk from single-file state persistence.
 
@@ -36,7 +36,7 @@ Acceptance:
 1. Restarts are resilient and state is queryable without file parsing.
 2. Multi-process safety improves over JSON-file writes.
 
-## Phase 14 - Multi-repo orchestration and quality loops
+## Phase 15 - Multi-repo orchestration and quality loops
 
 Goal: evolve from single-node control to scalable autonomous orchestration.
 
