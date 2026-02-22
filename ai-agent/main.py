@@ -28,7 +28,7 @@ from github.pr_manager import (
     has_ai_stop_comment,
     upsert_pr_comment,
 )
-from github.repo_manager import clone_or_update, prepare_job_worktree, cleanup_jobs
+from github.repo_manager import clone_or_update, prepare_job_worktree, cleanup_jobs, disk_usage_report
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
 from paths import ENV_FILE, STATE_FILE
@@ -337,6 +337,11 @@ def _apply_error_memory_update(state, repo, test_report):
         return
     repo_map = state.setdefault("strategy_error_memory", {}).setdefault(repo, {})
     repo_map.update(updates)
+
+
+def automation_enabled(state: dict, repo: str) -> bool:
+    auto = state.get("automation", {}).get(repo, {})
+    return bool(auto.get("enabled", False))
 
 
 def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id, phrase):
@@ -1529,6 +1534,18 @@ def loop_all(repos):
             print(f"\n== Repo cycle: {repo} ==")
             _run_repo_cycle(repo)
         time.sleep(POLL_INTERVAL)
+
+
+def self_checks():
+    """Run lightweight self-checks (disk usage, job cleanup)."""
+    disk = disk_usage_report()
+    record_event(
+        "self_check_disk",
+        repo=None,
+        status="warn" if disk.get("warn") else "ok",
+        data=disk,
+    )
+    cleanup_jobs()
 
 
 if __name__ == "__main__":

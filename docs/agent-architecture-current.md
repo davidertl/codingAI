@@ -1,5 +1,5 @@
 # Agent Architecture (Current)
-Version: 1.7.0
+Version: 1.8.0
 
 ## Core pipeline (current)
 
@@ -19,7 +19,6 @@ Version: 1.7.0
 - `core/research.py`: SearxNG-backed search with TTL cache and optional LLM summary.
 - `strategy_error_memory`: persisted mapping from error fingerprint → preferred strategy to bias future runs.
 - `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`; redaction for sensitive keys in event payloads.
-- `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`.
 - `llm/provider.py`: provider chain (openai/local/auto), health checks, failover, telemetry; resolves env from `paths.ENV_FILE`.
 - `llm/patch_llm.py`: patch + optional test-patch generation with schema validation.
 - `llm/strategy_llm.py`: next-strategy selector with retry/backoff.
@@ -30,7 +29,7 @@ Version: 1.7.0
 - `github/checks_manager.py`: GitHub Checks API publish.
 - `github/ci_status.py`: combined status + check-runs for CI gate.
 - `github/repo_manager.py`: shared mirrors under `workspaces/repos`, per-job worktrees under `workspaces/jobs/{repo}/{job_id}`, TTL cleanup; lists installation repos for projects UI.
-- `service/api.py`: FastAPI control plane, workers, metrics/events/CI endpoints, setup endpoints (`/setup/status`, `/setup/github`, `/setup/pem`), projects enable/disable (`/projects*`), pipeline controls (`/pipeline/{repo}/{issue}/pause|resume|cancel|diff`), serves dashboard (`service/static/index.html`).
+- `service/api.py`: FastAPI control plane, workers, metrics/events/CI endpoints, setup endpoints (`/setup/status`, `/setup/github`, `/setup/pem`), projects enable/disable (`/projects*`), automation toggles (`/automation/*`), pipeline controls (`/pipeline/{repo}/{issue}/pause|resume|cancel|diff`), serves dashboard (`service/static/index.html`).
 - `service/static/index.html`: Dashboard wiring for setup status/PEM upload, installation repo list with enable/disable, worker controls, queue/tracked issue views, pipeline diff/pause/resume/cancel buttons per tracked issue.
 - `docker-compose.yaml`: binds `.env` and `github_app/` into the service container read-write to support setup UI writes.
 

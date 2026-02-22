@@ -504,6 +504,10 @@
       return "status pending";
     }
 
+    function itemByRepo(repo) {
+      return state.repos.find((r) => r.repo === repo);
+    }
+
     function renderRepos() {
       const rows = state.repos.map((item) => {
         const active = item.repo === state.selectedRepo ? "repo active" : "repo";
@@ -513,11 +517,13 @@
             <div class="name">
               <span>${item.repo}</span>
               <span class="${running}">${item.running ? "worker:on" : "worker:off"}</span>
+              ${item.automation ? '<span class="chip ok">auto</span>' : '<span class="chip warn">manual</span>'}
             </div>
             <div class="row">
               <button data-action="select" data-repo="${item.repo}">Select</button>
               <button data-action="start" data-repo="${item.repo}">Start</button>
               <button data-action="stop" data-repo="${item.repo}">Stop</button>
+              <button data-action="auto-toggle" data-repo="${item.repo}">${item.automation ? "Disable Auto" : "Enable Auto"}</button>
             </div>
           </article>
         `;
@@ -738,6 +744,7 @@
       const repo = btn.dataset.repo;
       const action = btn.dataset.action;
       if (!repo || !action) return;
+      const repoItem = itemByRepo(repo);
       if (action === "select") {
         state.selectedRepo = repo;
         await refreshAll();
@@ -745,6 +752,10 @@
       }
       if (action === "start") return callAction(`/run/repo/${encodeURIComponent(repo)}`, `worker started for ${repo}`);
       if (action === "stop") return callAction(`/stop/repo/${encodeURIComponent(repo)}`, `worker stopped for ${repo}`);
+      if (action === "auto-toggle") {
+        const endpoint = repoItem?.automation ? "disable" : "enable";
+        return callAction(`/automation/${encodeURIComponent(repo)}/${endpoint}`, `automation ${endpoint}d for ${repo}`);
+      }
     });
 
     el.btnRunOnce.addEventListener("click", () => {

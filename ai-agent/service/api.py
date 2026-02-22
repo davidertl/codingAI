@@ -111,6 +111,8 @@ class WorkerManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._workers: dict[str, RepoWorker] = {}
+        self._auto_thread = threading.Thread(target=self._auto_scheduler, name="codingai-auto-scheduler", daemon=True)
+        self._auto_thread.start()
 
     def _available_repos(self) -> list[str]:
         return main.get_available_repos()
@@ -167,6 +169,32 @@ class WorkerManager:
             repos = list(self._workers.keys())
         for repo in repos:
             self.stop_repo(repo)
+
+    def _auto_scheduler(self):
+        while True:
+            try:
+                auto = main.load_state().get("automation", {}) or {}
+                for repo, cfg in auto.items():
+                    if not isinstance(cfg, dict):
+                        continue
+                    if not cfg.get("enabled"):
+                        continue
+                    if self.is_repo_running(repo):
+                        continue
+                    if repo not in self._available_repos():
+                        continue
+                    # start worker for automated repos
+                    try:
+                        self.start_repo(repo)
+                        record_event("auto_start_worker", repo=repo, status="started")
+                    except Exception as e:
+                        record_event("auto_start_worker", repo=repo, status="error", data={"error": str(e)[:200]})
+                # run periodic cleanup/self-check hooks
+                from github.repo_manager import cleanup_jobs
+                cleanup_jobs()
+            except Exception:
+                pass
+            time.sleep(max(60, SERVICE_POLL_INTERVAL_SECONDS))
 
 
 manager = WorkerManager()
@@ -474,6 +502,15 @@ def metrics_json():
     }
 
 
+@app.post("/self-checks")
+def run_self_checks():
+    try:
+        main.self_checks()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+    return {"status": "ok", "time_utc": _utc_now_iso()}
+
+
 @app.get("/events")
 def events(limit: int = 100, repo: str | None = None, event: str | None = None):
     limit = max(1, min(int(limit), 1000))
@@ -499,13 +536,53 @@ def ui_alias():
 @app.get("/repos")
 def repos():
     available = main.get_available_repos()
+    auto = main.load_state().get("automation", {})
     return [
         {
             "repo": repo,
             "running": manager.is_repo_running(repo),
+            "automation": bool(auto.get(repo, {}).get("enabled", False)) if isinstance(auto, dict) else False,
         }
         for repo in available
     ]
+
+
+def _automation_state():
+    state = main.load_state()
+    return state.setdefault("automation", {})
+
+
+@app.get("/automation")
+def automation():
+    auto = _automation_state()
+    return {"time_utc": _utc_now_iso(), "automation": auto}
+
+
+def _set_automation(repo: str, enabled: bool, push_gate: str | None = None):
+    state = main.load_state()
+    auto = state.setdefault("automation", {})
+    cfg = auto.get(repo, {}) if isinstance(auto.get(repo), dict) else {}
+    cfg["enabled"] = enabled
+    if push_gate:
+        cfg["push_gate"] = push_gate
+    cfg["updated_at"] = int(time.time())
+    auto[repo] = cfg
+    main.save_state(state)
+    return cfg
+
+
+@app.post("/automation/{repo}/enable")
+def automation_enable(repo: str, push_gate: str | None = None):
+    _require_repo(repo)
+    cfg = _set_automation(repo, True, push_gate)
+    return {"status": "ok", "repo": repo, "automation": cfg}
+
+
+@app.post("/automation/{repo}/disable")
+def automation_disable(repo: str):
+    _require_repo(repo)
+    cfg = _set_automation(repo, False)
+    return {"status": "ok", "repo": repo, "automation": cfg}
 
 
 @app.get("/policies")

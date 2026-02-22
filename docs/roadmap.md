@@ -1,10 +1,12 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.6
+Version: 1.3.7
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
 - Agent can open GitHub issues in `davidertl/codingAI` for missing features/bugs.
 - Scheduled self-checks: dependency drift, disk space, workspace cleanup.
+
+Status: Partially implemented (automation toggle + auto-start workers + self-check disk/cleanup; issue creation for missing features not yet wired).
 
 ## Phase 20 – Secrets & Safety (Local)
 - PEM/API key upload rules: size/type validation, overwrite policy, fingerprint stored, audit entry; never echo secret content.

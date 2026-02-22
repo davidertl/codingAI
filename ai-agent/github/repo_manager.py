@@ -14,6 +14,7 @@ JOBS_ROOT = os.path.join(WORKSPACE_ROOT, "jobs")
 
 JOB_TTL_SECONDS = int(os.getenv("CODINGAI_JOB_TTL_SECONDS", "86400") or "86400")
 JOB_MAX_PER_REPO = int(os.getenv("CODINGAI_JOB_MAX_PER_REPO", "12") or "12")
+DISK_WARN_THRESHOLD_BYTES = int(os.getenv("CODINGAI_DISK_WARN_THRESHOLD_BYTES", str(5 * 1024 * 1024 * 1024)) or str(5 * 1024 * 1024 * 1024))
 
 
 def list_installation_repos(token: str) -> list[str]:
@@ -135,6 +136,21 @@ def cleanup_jobs(now_ts: int | None = None):
             extra = entries[:-JOB_MAX_PER_REPO]
             for _mtime, path in extra:
                 shutil.rmtree(path, ignore_errors=True)
+
+
+def disk_usage_report() -> dict:
+    total_bytes = 0
+    for root, dirs, files in os.walk(WORKSPACES_DIR):
+        for f in files:
+            try:
+                total_bytes += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                continue
+    return {
+        "workspaces_bytes": total_bytes,
+        "warn": total_bytes >= DISK_WARN_THRESHOLD_BYTES,
+        "threshold_bytes": DISK_WARN_THRESHOLD_BYTES,
+    }
 
 
 def push_branch(repo_path, branch):

@@ -1,9 +1,9 @@
 # Current State
-Version: 1.8.0
+Version: 1.9.0
 
 This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
 
-## Phase status (1-19)
+## Phase status (1-21)
 
 1. `Phase 1 - Real patch generation`: Implemented  
    - LLM patch ops (`llm/patch_llm.py`)  
@@ -69,6 +69,13 @@ This reflects the verified code/runtime state for `ai-agent/` on branch `localst
    - Error fingerprint → preferred strategy memory (`strategy_error_memory`) persisted in state  
    - Test runner reuses historical fingerprints to bias strategy selection before LLM call  
    - Successes write back mappings from failed fingerprints to winning strategy
+20. `Phase 20 - Secrets & Safety (local)`: Implemented  
+   - Basic redaction for sensitive keys in event API (`events` now redacts common secret headers/keys)  
+   - No log echo of secret values; long strings truncated in event payloads.
+21. `Phase 21 - Autonomous mode & self-tasks`: Implemented  
+   - Per-repo automation toggle persisted in state (`automation[repo].enabled`) with UI button and API (`/automation/*`)  
+   - Auto-scheduler starts workers for automation-enabled repos; cleanup jobs run periodically  
+   - Disk usage self-check emits events (`self_check_disk`); manual trigger via `POST /self-checks`
 20. `Phase 20 - Secrets & Safety (local)`: Implemented (local-mode scope)  
    - Basic redaction for sensitive keys in event API (`events` now redacts common secret headers/keys)  
    - No log echo of secret values; long strings truncated in event payloads.
