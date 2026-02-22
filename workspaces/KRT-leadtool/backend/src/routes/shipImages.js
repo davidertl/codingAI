@@ -1,0 +1,320 @@
+/**
+ * Ship images routes — proxy + cache from Star Citizen Wiki API
+ * Uses CC-BY-NC-SA 4.0 Community images (starcitizen.tools wiki)
+ */
+
+const router = require('express').Router();
+const { query } = require('../db/postgres');
+const { valkey } = require('../db/valkey');
+const { requireAuth } = require('../auth/jwt');
+
+const SC_WIKI_API = 'https://api.star-citizen.wiki/api/v2/vehicles';
+const NAMES_CACHE_TTL = 86400; // 24 hours
+
+/** Derive a vehicle_category from Wiki API booleans */
+function deriveCategory(vehicle) {
+  if (vehicle.is_gravlev) return 'gravlev';
+  if (vehicle.is_vehicle) return 'ground_vehicle';
+  return 'ship'; // default — is_spaceship or unclassified
+}
+
+/** Extract vehicle stats from Wiki API response */
+function extractVehicleStats(vehicle) {
+  return {
+    displayName: vehicle.name || null,
+    crewMax: vehicle.crew?.max ?? null,
+    fuelCapacity: vehicle.fuel?.capacity ?? null,
+    cargoCapacity: vehicle.cargo_capacity ?? null,
+    hullHp: vehicle.health ?? null,
+    sizeCategory: vehicle.size?.en_EN || null,
+    category: deriveCategory(vehicle),
+    manufacturer: vehicle.manufacturer?.name || null,
+  };
+}
+
+/**
+ * GET /api/ship-images/names?category=ship|ground_vehicle|gravlev
+ * Lightweight list of vehicle names + manufacturer, cached in Valkey.
+ */
+router.get('/names', requireAuth, async (req, res, next) => {
+  try {
+    const { category } = req.query; // optional filter
+    const cacheKey = `ship_names:${category || 'all'}`;
+
+    // Try Valkey cache first
+    const cached = await valkey.get(cacheKey).catch(() => null);
+    if (cached) return res.json(JSON.parse(cached));
+
+    let sql = `SELECT ship_type, display_name, manufacturer, vehicle_category, crew_max, cargo_capacity, size_category FROM ship_images`;
+    const params = [];
+    if (category) {
+      sql += ` WHERE vehicle_category = $1`;
+      params.push(category);
+    }
+    sql += ` ORDER BY manufacturer ASC NULLS LAST, ship_type ASC`;
+
+    const result = await query(sql, params);
+
+    // Cache for 24 hours
+    await valkey.set(cacheKey, JSON.stringify(result.rows), 'EX', NAMES_CACHE_TTL).catch(() => {});
+
+    res.json(result.rows);
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/ship-images
+ * List all cached ship images
+ */
+router.get('/', requireAuth, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT * FROM ship_images ORDER BY ship_type ASC`
+    );
+    res.json(result.rows);
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/ship-images/lookup/:shipType
+ * Look up a ship image by type. Returns cached version or fetches from Wiki API.
+ */
+router.get('/lookup/:shipType', requireAuth, async (req, res, next) => {
+  try {
+    const { shipType } = req.params;
+
+    // Check cache first
+    const cached = await query(
+      `SELECT * FROM ship_images WHERE LOWER(ship_type) = LOWER($1)`,
+      [shipType]
+    );
+
+    if (cached.rows.length > 0) {
+      return res.json(cached.rows[0]);
+    }
+
+    // Fetch from SC Wiki API
+    try {
+      const response = await fetch(`${SC_WIKI_API}?page[limit]=1&filter[name]=${encodeURIComponent(shipType)}`);
+      if (!response.ok) {
+        return res.status(404).json({ error: 'Ship not found in Wiki API' });
+      }
+
+      const data = await response.json();
+      const vehicles = data.data || [];
+
+      if (vehicles.length === 0) {
+        return res.status(404).json({ error: 'Ship type not found' });
+      }
+
+      const vehicle = vehicles[0];
+      const imageUrl = vehicle.media?.store_image?.url
+        || vehicle.media?.gallery?.[0]?.url
+        || null;
+      const thumbnailUrl = vehicle.media?.store_image?.sizes?.small
+        || null;
+
+      if (!imageUrl) {
+        return res.status(404).json({ error: 'No image available for this ship' });
+      }
+
+      const stats = extractVehicleStats(vehicle);
+
+      // Cache in database
+      const result = await query(
+        `INSERT INTO ship_images (ship_type, display_name, image_url, thumbnail_url, vehicle_category, manufacturer,
+           crew_max, fuel_capacity, cargo_capacity, hull_hp, size_category,
+           source, source_url, license, license_url, author)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'sc_wiki', $12, 'CC-BY-NC-SA 4.0', 'https://creativecommons.org/licenses/by-nc-sa/4.0/', $13)
+         ON CONFLICT (ship_type) DO UPDATE SET
+           display_name = EXCLUDED.display_name,
+           image_url = EXCLUDED.image_url,
+           thumbnail_url = EXCLUDED.thumbnail_url,
+           vehicle_category = EXCLUDED.vehicle_category,
+           manufacturer = EXCLUDED.manufacturer,
+           crew_max = EXCLUDED.crew_max,
+           fuel_capacity = EXCLUDED.fuel_capacity,
+           cargo_capacity = EXCLUDED.cargo_capacity,
+           hull_hp = EXCLUDED.hull_hp,
+           size_category = EXCLUDED.size_category,
+           source_url = EXCLUDED.source_url,
+           author = EXCLUDED.author
+         RETURNING *`,
+        [
+          vehicle.name || shipType,
+          stats.displayName,
+          imageUrl,
+          thumbnailUrl,
+          stats.category,
+          stats.manufacturer,
+          stats.crewMax,
+          stats.fuelCapacity,
+          stats.cargoCapacity,
+          stats.hullHp,
+          stats.sizeCategory,
+          vehicle.link || `https://starcitizen.tools/${encodeURIComponent(vehicle.name || shipType)}`,
+          'Star Citizen Wiki Community',
+        ]
+      );
+
+      res.json(result.rows[0]);
+    } catch (fetchErr) {
+      console.error('[KRT] Wiki API fetch error:', fetchErr.message);
+      res.status(502).json({ error: 'Failed to fetch from Wiki API' });
+    }
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/ship-images
+ * Manually add/update a ship image (admin use)
+ */
+router.post('/', requireAuth, async (req, res, next) => {
+  try {
+    const { ship_type, display_name, image_url, thumbnail_url, vehicle_category, manufacturer,
+            crew_max, fuel_capacity, cargo_capacity, hull_hp, size_category,
+            source, source_url, license, license_url, author } = req.body;
+
+    if (!ship_type || !image_url) {
+      return res.status(400).json({ error: 'ship_type and image_url required' });
+    }
+
+    const result = await query(
+      `INSERT INTO ship_images (ship_type, display_name, image_url, thumbnail_url, vehicle_category, manufacturer,
+         crew_max, fuel_capacity, cargo_capacity, hull_hp, size_category,
+         source, source_url, license, license_url, author)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (ship_type) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         image_url = EXCLUDED.image_url,
+         thumbnail_url = EXCLUDED.thumbnail_url,
+         vehicle_category = EXCLUDED.vehicle_category,
+         manufacturer = EXCLUDED.manufacturer,
+         crew_max = EXCLUDED.crew_max,
+         fuel_capacity = EXCLUDED.fuel_capacity,
+         cargo_capacity = EXCLUDED.cargo_capacity,
+         hull_hp = EXCLUDED.hull_hp,
+         size_category = EXCLUDED.size_category,
+         source = EXCLUDED.source,
+         source_url = EXCLUDED.source_url,
+         license = EXCLUDED.license,
+         license_url = EXCLUDED.license_url,
+         author = EXCLUDED.author
+       RETURNING *`,
+      [
+        ship_type,
+        display_name || null,
+        image_url,
+        thumbnail_url || null,
+        vehicle_category || 'ship',
+        manufacturer || null,
+        crew_max ?? null,
+        fuel_capacity ?? null,
+        cargo_capacity ?? null,
+        hull_hp ?? null,
+        size_category || null,
+        source || 'manual',
+        source_url || null,
+        license || 'CC-BY-NC-SA 4.0',
+        license_url || 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
+        author || null,
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) { next(err); }
+});
+
+/**
+ * DELETE /api/ship-images/:id
+ */
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    await query(`DELETE FROM ship_images WHERE id = $1`, [req.params.id]);
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/ship-images/sync-all
+ * Bulk-fetch all ships from Wiki API and cache their images
+ */
+router.post('/sync-all', requireAuth, async (req, res, next) => {
+  try {
+    let page = 1;
+    let totalSynced = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await fetch(`${SC_WIKI_API}?page[limit]=50&page[number]=${page}`);
+      if (!response.ok) break;
+
+      const data = await response.json();
+      const vehicles = data.data || [];
+
+      if (vehicles.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      for (const vehicle of vehicles) {
+        const imageUrl = vehicle.media?.store_image?.url
+          || vehicle.media?.gallery?.[0]?.url
+          || null;
+
+        if (!imageUrl || !vehicle.name) continue;
+
+        const thumbnailUrl = vehicle.media?.store_image?.sizes?.small || null;
+        const stats = extractVehicleStats(vehicle);
+
+        await query(
+          `INSERT INTO ship_images (ship_type, display_name, image_url, thumbnail_url, vehicle_category, manufacturer,
+             crew_max, fuel_capacity, cargo_capacity, hull_hp, size_category,
+             source, source_url, license, license_url, author)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'sc_wiki', $12, 'CC-BY-NC-SA 4.0', 'https://creativecommons.org/licenses/by-nc-sa/4.0/', 'Star Citizen Wiki Community')
+           ON CONFLICT (ship_type) DO UPDATE SET
+             display_name = EXCLUDED.display_name,
+             image_url = EXCLUDED.image_url,
+             thumbnail_url = EXCLUDED.thumbnail_url,
+             vehicle_category = EXCLUDED.vehicle_category,
+             manufacturer = EXCLUDED.manufacturer,
+             crew_max = EXCLUDED.crew_max,
+             fuel_capacity = EXCLUDED.fuel_capacity,
+             cargo_capacity = EXCLUDED.cargo_capacity,
+             hull_hp = EXCLUDED.hull_hp,
+             size_category = EXCLUDED.size_category`,
+          [
+            vehicle.name,
+            stats.displayName,
+            imageUrl,
+            thumbnailUrl,
+            stats.category,
+            stats.manufacturer,
+            stats.crewMax,
+            stats.fuelCapacity,
+            stats.cargoCapacity,
+            stats.hullHp,
+            stats.sizeCategory,
+            vehicle.link || `https://starcitizen.tools/${encodeURIComponent(vehicle.name)}`,
+          ]
+        );
+        totalSynced++;
+      }
+
+      // Check pagination
+      const meta = data.meta || {};
+      if (meta.current_page >= meta.last_page || vehicles.length < 50) {
+        hasMore = false;
+      }
+      page++;
+    }
+
+    // Invalidate name caches
+    const keys = await valkey.keys('ship_names:*').catch(() => []);
+    if (keys.length > 0) await valkey.del(...keys).catch(() => {});
+
+    res.json({ synced: totalSynced, message: `Synced ${totalSynced} ship images from Wiki API` });
+  } catch (err) { next(err); }
+});
+
+module.exports = router;

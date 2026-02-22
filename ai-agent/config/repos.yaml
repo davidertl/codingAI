@@ -1,0 +1,8 @@
+KRT-leadtool:
+  type: node
+  test_path: frontend
+  build_fallback: true
+
+KRT-Com_Discord:
+  type: docker
+  compose_file: docker-compose.yml
