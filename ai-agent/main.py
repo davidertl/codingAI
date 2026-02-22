@@ -705,6 +705,14 @@ def _run_repo_cycle(repo):
         process_issue(repo, issue, state)
 
 
+def run_repo_cycle_once(repo):
+    _run_repo_cycle(repo)
+
+
+def get_available_repos():
+    return list(AVAILABLE_REPOS)
+
+
 def loop(repo):
     while True:
         _run_repo_cycle(repo)

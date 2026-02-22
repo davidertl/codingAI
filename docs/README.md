@@ -24,6 +24,7 @@ This folder contains the Phase 0 analysis deliverables for the local AI coding a
 - `inventory-canonical.tsv`: machine-readable file inventory (`path,size,ext,mime,class`).
 - `local-llm-setup.md`: local LLM provider mode and Ollama bootstrap runbook.
 - `phase7plus-roadmap.md`: phased implementation plan for remaining work (API, Web UI, governance, observability).
+- `phase8-api-control-plane.md`: FastAPI control plane endpoints and worker model.
 
 ## Notes
 
