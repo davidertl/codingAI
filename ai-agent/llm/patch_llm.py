@@ -6,11 +6,18 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from llm.provider import (
+    build_llm_request,
+    extract_output_text,
+    llm_is_configured,
+    provider_name,
+    resolve_model,
+)
 
 load_dotenv("/home/codingai/ai-agent/.env")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_PATCH_MODEL = os.getenv("OPENAI_PATCH_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+PATCH_LLM_MODEL = os.getenv("PATCH_LLM_MODEL", OPENAI_PATCH_MODEL)
 
 _SKIP_DIRS = {
     ".git",
@@ -240,10 +247,10 @@ def propose_patch_ops(
     repo_analysis: dict,
     max_ops: int = 20,
 ) -> dict:
-    if not OPENAI_API_KEY:
+    if not llm_is_configured():
         return {
             "patch_ops": [],
-            "reason": "OPENAI_API_KEY not set; cannot generate patch ops.",
+            "reason": f"LLM provider '{provider_name()}' is not configured; cannot generate patch ops.",
             "confidence": 0.0,
         }
 
@@ -290,20 +297,16 @@ def propose_patch_ops(
         },
     }
 
-    payload = {
-        "model": OPENAI_PATCH_MODEL,
-        "instructions": instructions,
-        "input": json.dumps(user_input, ensure_ascii=False),
-        "max_output_tokens": 3500,
-        "text": {"format": {"type": "text"}},
-    }
-
+    model = resolve_model(PATCH_LLM_MODEL)
+    url, headers, payload = build_llm_request(
+        model=model,
+        instructions=instructions,
+        input_text=json.dumps(user_input, ensure_ascii=False),
+        max_output_tokens=3500,
+    )
     r = requests.post(
-        "https://api.openai.com/v1/responses",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
+        url,
+        headers=headers,
         json=payload,
         timeout=120,
     )
@@ -320,11 +323,11 @@ def propose_patch_ops(
     except Exception:
         return {
             "patch_ops": [],
-            "reason": "OpenAI API returned invalid JSON payload.",
+            "reason": f"LLM provider '{provider_name()}' returned invalid JSON payload.",
             "confidence": 0.0,
         }
 
-    output_text = data.get("output_text", "")
+    output_text = extract_output_text(data)
     try:
         out = _extract_json(output_text)
     except Exception:
@@ -359,10 +362,10 @@ def propose_test_patch_ops(
     base_patch_ops: list[dict],
     max_ops: int = 6,
 ) -> dict:
-    if not OPENAI_API_KEY:
+    if not llm_is_configured():
         return {
             "patch_ops": [],
-            "reason": "OPENAI_API_KEY not set; test patch generation disabled.",
+            "reason": f"LLM provider '{provider_name()}' is not configured; test patch generation disabled.",
             "confidence": 0.0,
         }
 
@@ -406,20 +409,16 @@ def propose_test_patch_ops(
         "constraints": {"max_ops": max_ops},
     }
 
-    payload = {
-        "model": OPENAI_PATCH_MODEL,
-        "instructions": instructions,
-        "input": json.dumps(user_input, ensure_ascii=False),
-        "max_output_tokens": 2500,
-        "text": {"format": {"type": "text"}},
-    }
-
+    model = resolve_model(PATCH_LLM_MODEL)
+    url, headers, payload = build_llm_request(
+        model=model,
+        instructions=instructions,
+        input_text=json.dumps(user_input, ensure_ascii=False),
+        max_output_tokens=2500,
+    )
     r = requests.post(
-        "https://api.openai.com/v1/responses",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
+        url,
+        headers=headers,
         json=payload,
         timeout=120,
     )
@@ -436,11 +435,11 @@ def propose_test_patch_ops(
     except Exception:
         return {
             "patch_ops": [],
-            "reason": "OpenAI API returned invalid JSON payload for test patch ops.",
+            "reason": f"LLM provider '{provider_name()}' returned invalid JSON payload for test patch ops.",
             "confidence": 0.0,
         }
 
-    output_text = data.get("output_text", "")
+    output_text = extract_output_text(data)
     try:
         out = _extract_json(output_text)
     except Exception:

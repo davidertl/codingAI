@@ -6,10 +6,16 @@ import time
 
 import requests
 from dotenv import load_dotenv
+from llm.provider import (
+    build_llm_request,
+    extract_output_text,
+    llm_is_configured,
+    provider_name,
+    resolve_model,
+)
 
 load_dotenv("/home/codingai/ai-agent/.env")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_429_MAX_RETRIES = int(os.getenv("OPENAI_429_MAX_RETRIES", "4"))
 OPENAI_429_BASE_BACKOFF_SECONDS = float(os.getenv("OPENAI_429_BASE_BACKOFF_SECONDS", "1.5"))
@@ -43,7 +49,7 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
 
 
-def _post_responses_with_backoff(payload: dict):
+def _post_with_backoff(*, model: str, instructions: str, input_text: str, max_output_tokens: int):
     """
     Retries on 429 and transient 5xx with exponential backoff + jitter.
     Returns (response, retry_count).
@@ -53,12 +59,15 @@ def _post_responses_with_backoff(payload: dict):
 
     for attempt in range(OPENAI_429_MAX_RETRIES + 1):
         try:
+            url, headers, payload = build_llm_request(
+                model=model,
+                instructions=instructions,
+                input_text=input_text,
+                max_output_tokens=max_output_tokens,
+            )
             r = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
+                url,
+                headers=headers,
                 json=payload,
                 timeout=60,
             )
@@ -128,11 +137,11 @@ def pick_next_strategy(
         "confidence": 0.0-1.0
       }
     """
-    if not OPENAI_API_KEY:
-        # No key -> deterministic fallback
+    if not llm_is_configured():
+        # Provider unavailable -> deterministic fallback
         return {
             "next_strategy_id": remaining[0]["id"] if remaining else None,
-            "reason": "OPENAI_API_KEY not set; fallback to first remaining strategy.",
+            "reason": f"LLM provider '{provider_name()}' is not configured; fallback to first remaining strategy.",
             "confidence": 0.0,
             "retry_count": 0,
         }
@@ -165,23 +174,17 @@ def pick_next_strategy(
         "strategy_memory": strategy_memory or {},
     }
 
-    payload = {
-        "model": OPENAI_MODEL,
-        "instructions": instructions,
-        "input": json.dumps(user, ensure_ascii=False),
-        "max_output_tokens": 350,
-        "text": {
-            "format": {
-                "type": "text"
-            }
-        },
-    }
-
-    r, retry_count = _post_responses_with_backoff(payload)
+    model = resolve_model(OPENAI_MODEL)
+    r, retry_count = _post_with_backoff(
+        model=model,
+        instructions=instructions,
+        input_text=json.dumps(user, ensure_ascii=False),
+        max_output_tokens=350,
+    )
     if r is None:
         return {
             "next_strategy_id": remaining[0]["id"] if remaining else None,
-            "reason": "OpenAI API request failed after retries; fallback to first remaining strategy.",
+            "reason": f"LLM provider '{provider_name()}' request failed after retries; fallback to first remaining strategy.",
             "confidence": 0.0,
             "retry_count": retry_count,
         }
@@ -190,13 +193,13 @@ def pick_next_strategy(
         # fallback if API fails
         return {
             "next_strategy_id": remaining[0]["id"] if remaining else None,
-            "reason": f"OpenAI API error {r.status_code} after retries; fallback to first remaining strategy.",
+            "reason": f"LLM provider '{provider_name()}' API error {r.status_code} after retries; fallback to first remaining strategy.",
             "confidence": 0.0,
             "retry_count": retry_count,
         }
 
     data = r.json()
-    text = data.get("output_text", "")
+    text = extract_output_text(data)
     try:
         out = _extract_json(text)
     except Exception:

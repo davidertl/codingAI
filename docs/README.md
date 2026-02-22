@@ -22,6 +22,7 @@ This folder contains the Phase 0 analysis deliverables for the local AI coding a
 - `phase1-design-ready.md`: decision-ready design for real patch generation + multi-file Git Data API commits.
 - `phase0-summary.md`: concise summary and prioritized next actions.
 - `inventory-canonical.tsv`: machine-readable file inventory (`path,size,ext,mime,class`).
+- `local-llm-setup.md`: local LLM provider mode and Ollama bootstrap runbook.
 
 ## Notes
 
