@@ -32,6 +32,7 @@ def get_open_pr_for_branch(repo, branch):
     return {
         "number": pr["number"],
         "url": pr["html_url"],
+        "created": False,
     }
 
 
@@ -42,6 +43,7 @@ def create_or_get_pr(repo, branch, issue_number):
         return {
             "number": pr["number"],
             "url": pr["html_url"],
+            "created": False,
         }
 
     # Create PR
@@ -64,6 +66,7 @@ def create_or_get_pr(repo, branch, issue_number):
     return {
         "number": pr["number"],
         "url": pr["html_url"],
+        "created": True,
     }
 
 

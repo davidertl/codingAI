@@ -2,7 +2,7 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.test_runner import analyze_repo, run_tests
 from github.git_api_commit import (
@@ -36,6 +36,15 @@ MAX_PATCH_OPS = 20
 REPORT_MARKER = "<!-- codingai-test-report -->"
 AI_STOP_PHRASE = "AI Stop"
 STRATEGY_SWITCH_CONFIDENCE_THRESHOLD = float(os.getenv("STRATEGY_SWITCH_CONFIDENCE_THRESHOLD", "0.65"))
+MAX_PRS_PER_REPO_PER_DAY = int(os.getenv("MAX_PRS_PER_REPO_PER_DAY", "3"))
+MANUAL_APPROVAL_REQUIRED = (os.getenv("MANUAL_APPROVAL_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"})
+PR_AUTO_UPDATE_ENABLED = (os.getenv("PR_AUTO_UPDATE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
+MANUAL_APPROVAL_LABELS = {
+    s.strip().lower()
+    for s in os.getenv("MANUAL_APPROVAL_LABELS", "ai-approve,ai-approved,manual-approval-granted").split(",")
+    if s.strip()
+}
+MANUAL_APPROVAL_TOKEN = os.getenv("MANUAL_APPROVAL_TOKEN", "[ai-approve]").strip().lower()
 
 
 def load_state():
@@ -77,6 +86,10 @@ def should_skip_due_to_cooldown(state, repo, issue_number):
     return now < retry_after
 
 
+def _get_issue_state(state, repo, number):
+    return state.setdefault(repo, {}).setdefault(str(number), {})
+
+
 def _register_failure(state, repo, number, summary, details):
     details = (details or "").strip()
     details = details[:12000]
@@ -87,12 +100,11 @@ def _register_failure(state, repo, number, summary, details):
         f"{summary}\n\n```\n{details}\n```",
     )
 
-    state[repo][number] = {
-        "pr_created": False,
-        "last_status": "failed",
-        "last_error": details[:2000],
-        "retry_after": int(time.time()) + FAIL_COOLDOWN_SECONDS,
-    }
+    issue_state = _get_issue_state(state, repo, number)
+    issue_state["pr_created"] = bool(issue_state.get("pr_created", False))
+    issue_state["last_status"] = "failed"
+    issue_state["last_error"] = details[:2000]
+    issue_state["retry_after"] = int(time.time()) + FAIL_COOLDOWN_SECONDS
     save_state(state)
 
 
@@ -105,7 +117,7 @@ def _apply_strategy_memory_update(state, repo, test_report):
 
 def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id):
     now = int(time.time())
-    issue_state = state.setdefault(repo, {}).setdefault(issue_number, {})
+    issue_state = _get_issue_state(state, repo, issue_number)
     issue_state["ai_stopped"] = True
     issue_state["ai_stopped_at"] = now
     issue_state["ai_stop_reason"] = AI_STOP_PHRASE
@@ -120,7 +132,7 @@ def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id):
 
 
 def _sync_ai_stop_state(state, repo, issue_number, branch):
-    issue_state = state.setdefault(repo, {}).setdefault(issue_number, {})
+    issue_state = _get_issue_state(state, repo, issue_number)
     if issue_state.get("ai_stopped"):
         return True
 
@@ -132,6 +144,7 @@ def _sync_ai_stop_state(state, repo, issue_number, branch):
         pr_number = pr_info["number"]
         issue_state["pr_number"] = pr_number
         issue_state["pr_url"] = pr_info["url"]
+        issue_state["pr_created"] = True
         save_state(state)
 
     stopped, comment = has_ai_stop_comment(repo, pr_number, phrase=AI_STOP_PHRASE)
@@ -147,6 +160,86 @@ def _sync_ai_stop_state(state, repo, issue_number, branch):
     )
     save_state(state)
     return True
+
+
+def _extract_issue_labels(issue):
+    out = set()
+    for l in issue.get("labels", []):
+        if isinstance(l, dict):
+            name = str(l.get("name", "")).strip()
+        else:
+            name = str(l).strip()
+        if name:
+            out.add(name.lower())
+    return out
+
+
+def _has_manual_approval(issue):
+    if not MANUAL_APPROVAL_REQUIRED:
+        return True
+
+    labels = _extract_issue_labels(issue)
+    if labels.intersection(MANUAL_APPROVAL_LABELS):
+        return True
+
+    text = f"{issue.get('title', '')}\n{issue.get('body', '')}".lower()
+    if MANUAL_APPROVAL_TOKEN and MANUAL_APPROVAL_TOKEN in text:
+        return True
+    if "ai approve" in text:
+        return True
+
+    return False
+
+
+def _utc_day_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _seconds_until_next_utc_day():
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(60, int((tomorrow - now).total_seconds()))
+
+
+def _get_daily_pr_count(state, repo, day_key):
+    return int(state.get("daily_pr_counts", {}).get(repo, {}).get(day_key, 0))
+
+
+def _increment_daily_pr_count(state, repo, day_key):
+    state.setdefault("daily_pr_counts", {}).setdefault(repo, {})
+    current = int(state["daily_pr_counts"][repo].get(day_key, 0))
+    state["daily_pr_counts"][repo][day_key] = current + 1
+
+
+def _resolve_branch_for_issue(state, repo, issue_number):
+    issue_state = _get_issue_state(state, repo, issue_number)
+    active_branch = issue_state.get("active_branch")
+
+    if active_branch:
+        pr_info = get_open_pr_for_branch(repo, active_branch)
+        if pr_info:
+            issue_state["pr_created"] = True
+            issue_state["pr_number"] = pr_info["number"]
+            issue_state["pr_url"] = pr_info["url"]
+            return active_branch, pr_info
+
+        # previous PR for active branch is not open anymore -> start a new iteration branch
+        if issue_state.get("pr_created"):
+            issue_state["pr_created"] = False
+            issue_state["pr_number"] = None
+            issue_state["pr_url"] = None
+            issue_state["report_comment_id"] = None
+            issue_state["source_issue_updated_at"] = None
+            issue_state["active_branch"] = None
+            active_branch = None
+
+    if not active_branch:
+        next_iter = int(issue_state.get("branch_iteration", 0)) + 1
+        active_branch = f"ai/issue-{int(issue_number)}-iter-{next_iter}"
+        issue_state["branch_iteration"] = next_iter
+        issue_state["active_branch"] = active_branch
+
+    return active_branch, None
 
 
 def _checkout_local_branch_at_sha(repo_path, branch, base_sha):
@@ -243,26 +336,69 @@ def _build_pr_test_comment(issue_number, test_report, test_output, patch_result,
 
 def process_issue(repo, issue, state):
     number = str(issue["number"])
-    branch = f"ai/issue-{int(number)}"
+    issue_state = _get_issue_state(state, repo, number)
 
-    if repo not in state:
-        state[repo] = {}
+    # resolve active/open PR branch first (iteration naming strategy)
+    try:
+        branch, existing_pr = _resolve_branch_for_issue(state, repo, number)
 
-    if _sync_ai_stop_state(state, repo, number, branch):
-        print(f"Issue #{number} has AI Stop on PR comments. Processing disabled.")
+        if _sync_ai_stop_state(state, repo, number, branch):
+            print(f"Issue #{number} has AI Stop on PR comments. Processing disabled.")
+            return
+    except Exception as e:
+        _register_failure(
+            state,
+            repo,
+            number,
+            f"Phase 5 preflight failed for issue #{number}.",
+            str(e),
+        )
         return
 
-    # Already processed
-    if number in state[repo] and state[repo][number].get("pr_created"):
-        print(f"Issue #{number} already processed (PR created). Skipping.")
+    # keep state synced if an open PR exists for this branch
+    if existing_pr:
+        issue_state["pr_created"] = True
+        issue_state["pr_number"] = existing_pr["number"]
+        issue_state["pr_url"] = existing_pr["url"]
+
+    if not _has_manual_approval(issue):
+        issue_state["pending_manual_approval"] = True
+        issue_state["last_status"] = "pending_manual_approval"
+        save_state(state)
+        print(f"Issue #{number} pending manual approval. Skipping.")
         return
+    issue_state["pending_manual_approval"] = False
+
+    # Existing PR behavior: either skip completely or auto-update only when issue changed.
+    if issue_state.get("pr_created"):
+        if not PR_AUTO_UPDATE_ENABLED:
+            print(f"Issue #{number} has existing PR and auto-update is disabled. Skipping.")
+            return
+
+        issue_updated_at = str(issue.get("updated_at", ""))
+        if issue_updated_at and issue_updated_at == str(issue_state.get("source_issue_updated_at", "")):
+            print(f"Issue #{number} unchanged since last run; skipping PR auto-update.")
+            return
 
     # Cooldown
     if should_skip_due_to_cooldown(state, repo, number):
         print(f"Issue #{number} in cooldown. Skipping.")
         return
 
-    print(f"\nProcessing issue #{number}")
+    # Daily safety cap for creating NEW PRs
+    if not issue_state.get("pr_created") and MAX_PRS_PER_REPO_PER_DAY > 0:
+        day_key = _utc_day_key()
+        daily_count = _get_daily_pr_count(state, repo, day_key)
+        if daily_count >= MAX_PRS_PER_REPO_PER_DAY:
+            issue_state["last_status"] = "daily_pr_limit_reached"
+            issue_state["retry_after"] = int(time.time()) + _seconds_until_next_utc_day()
+            save_state(state)
+            print(
+                f"Repo {repo} reached daily PR cap ({daily_count}/{MAX_PRS_PER_REPO_PER_DAY}) on {day_key}. Skipping."
+            )
+            return
+
+    print(f"\nProcessing issue #{number} on branch {branch}")
 
     repo_path = clone_or_update(repo)
 
@@ -361,6 +497,9 @@ def process_issue(repo, issue, state):
             )
             return
 
+        if pr_info.get("created"):
+            _increment_daily_pr_count(state, repo, _utc_day_key())
+
         print("PR URL:", pr_info["url"])
 
         comment_body = _build_pr_test_comment(
@@ -379,17 +518,17 @@ def process_issue(repo, issue, state):
         action = "updated" if comment_result.get("updated") else "created"
         print(f"PR report comment {action}: {comment_result.get('url')}")
 
-        state[repo][number] = {
-            "pr_created": True,
-            "last_status": "passed",
-            "patch_ops_count": len(patch_ops),
-            "patch_confidence": patch_result.get("confidence", 0.0),
-            "strategy_confidence_threshold": STRATEGY_SWITCH_CONFIDENCE_THRESHOLD,
-            "pr_number": pr_info["number"],
-            "pr_url": pr_info["url"],
-            "report_comment_id": comment_result.get("id"),
-            "retry_after": 0,
-        }
+        issue_state["active_branch"] = branch
+        issue_state["pr_created"] = True
+        issue_state["last_status"] = "passed"
+        issue_state["patch_ops_count"] = len(patch_ops)
+        issue_state["patch_confidence"] = patch_result.get("confidence", 0.0)
+        issue_state["strategy_confidence_threshold"] = STRATEGY_SWITCH_CONFIDENCE_THRESHOLD
+        issue_state["pr_number"] = pr_info["number"]
+        issue_state["pr_url"] = pr_info["url"]
+        issue_state["report_comment_id"] = comment_result.get("id")
+        issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
+        issue_state["retry_after"] = 0
         save_state(state)
 
     except Exception as e:
