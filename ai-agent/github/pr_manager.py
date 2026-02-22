@@ -12,22 +12,32 @@ def _headers():
     }
 
 
-def create_or_get_pr(repo, branch, issue_number):
+def _find_open_pr_for_branch(repo, branch):
     headers = _headers()
-
-    # Check whether a PR for the branch already exists
     check_url = f"https://api.github.com/repos/{OWNER}/{repo}/pulls"
     params = {
         "head": f"{OWNER}:{branch}",
         "state": "open",
     }
-
     r = requests.get(check_url, headers=headers, params=params)
     r.raise_for_status()
-
     existing = r.json()
-    if existing:
-        pr = existing[0]
+    return existing[0] if existing else None
+
+
+def get_open_pr_for_branch(repo, branch):
+    pr = _find_open_pr_for_branch(repo, branch)
+    if not pr:
+        return None
+    return {
+        "number": pr["number"],
+        "url": pr["html_url"],
+    }
+
+
+def create_or_get_pr(repo, branch, issue_number):
+    pr = _find_open_pr_for_branch(repo, branch)
+    if pr:
         print("PR already exists.")
         return {
             "number": pr["number"],
@@ -35,6 +45,7 @@ def create_or_get_pr(repo, branch, issue_number):
         }
 
     # Create PR
+    headers = _headers()
     create_url = f"https://api.github.com/repos/{OWNER}/{repo}/pulls"
     data = {
         "title": f"AI Fix for Issue #{issue_number}",
@@ -56,15 +67,30 @@ def create_or_get_pr(repo, branch, issue_number):
     }
 
 
+def list_pr_comments(repo, pr_number, per_page=100):
+    headers = _headers()
+    list_url = f"https://api.github.com/repos/{OWNER}/{repo}/issues/{pr_number}/comments"
+    r = requests.get(list_url, headers=headers, params={"per_page": per_page})
+    r.raise_for_status()
+    return r.json()
+
+
+def has_ai_stop_comment(repo, pr_number, phrase="AI Stop"):
+    phrase_lc = phrase.lower()
+    for c in list_pr_comments(repo, pr_number):
+        body = (c.get("body") or "").lower()
+        if phrase_lc in body:
+            return True, c
+    return False, None
+
+
 def upsert_pr_comment(repo, pr_number, body, marker="<!-- codingai-test-report -->"):
     headers = _headers()
-
     list_url = f"https://api.github.com/repos/{OWNER}/{repo}/issues/{pr_number}/comments"
-    r = requests.get(list_url, headers=headers, params={"per_page": 100})
-    r.raise_for_status()
+    comments = list_pr_comments(repo, pr_number, per_page=100)
 
     existing_comment = None
-    for c in r.json():
+    for c in comments:
         if marker in (c.get("body") or ""):
             existing_comment = c
             break

@@ -15,7 +15,12 @@ from github.git_api_commit import (
     update_branch,
 )
 from github.issue_manager import create_issue, get_ai_issues
-from github.pr_manager import create_or_get_pr, upsert_pr_comment
+from github.pr_manager import (
+    create_or_get_pr,
+    get_open_pr_for_branch,
+    has_ai_stop_comment,
+    upsert_pr_comment,
+)
 from github.repo_manager import clone_or_update
 from llm.patch_llm import propose_patch_ops
 
@@ -29,6 +34,7 @@ POLL_INTERVAL = 300
 FAIL_COOLDOWN_SECONDS = 6 * 60 * 60  # 6h
 MAX_PATCH_OPS = 20
 REPORT_MARKER = "<!-- codingai-test-report -->"
+AI_STOP_PHRASE = "AI Stop"
 
 
 def load_state():
@@ -87,6 +93,52 @@ def _register_failure(state, repo, number, summary, details):
         "retry_after": int(time.time()) + FAIL_COOLDOWN_SECONDS,
     }
     save_state(state)
+
+
+def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id):
+    now = int(time.time())
+    issue_state = state.setdefault(repo, {}).setdefault(issue_number, {})
+    issue_state["ai_stopped"] = True
+    issue_state["ai_stopped_at"] = now
+    issue_state["ai_stop_reason"] = AI_STOP_PHRASE
+    issue_state["pr_number"] = pr_number
+    issue_state["ai_stop_comment_id"] = comment_id
+
+    state.setdefault("pr_controls", {})[str(pr_number)] = {
+        "ai_stopped": True,
+        "stopped_at": now,
+        "reason": AI_STOP_PHRASE,
+    }
+
+
+def _sync_ai_stop_state(state, repo, issue_number, branch):
+    issue_state = state.setdefault(repo, {}).setdefault(issue_number, {})
+    if issue_state.get("ai_stopped"):
+        return True
+
+    pr_number = issue_state.get("pr_number")
+    if not pr_number:
+        pr_info = get_open_pr_for_branch(repo, branch)
+        if not pr_info:
+            return False
+        pr_number = pr_info["number"]
+        issue_state["pr_number"] = pr_number
+        issue_state["pr_url"] = pr_info["url"]
+        save_state(state)
+
+    stopped, comment = has_ai_stop_comment(repo, pr_number, phrase=AI_STOP_PHRASE)
+    if not stopped:
+        return False
+
+    _mark_ai_stopped(
+        state=state,
+        repo=repo,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        comment_id=comment.get("id") if comment else None,
+    )
+    save_state(state)
+    return True
 
 
 def _checkout_local_branch_at_sha(repo_path, branch, base_sha):
@@ -183,9 +235,14 @@ def _build_pr_test_comment(issue_number, test_report, test_output, patch_result,
 
 def process_issue(repo, issue, state):
     number = str(issue["number"])
+    branch = f"ai/issue-{int(number)}"
 
     if repo not in state:
         state[repo] = {}
+
+    if _sync_ai_stop_state(state, repo, number, branch):
+        print(f"Issue #{number} has AI Stop on PR comments. Processing disabled.")
+        return
 
     # Already processed
     if number in state[repo] and state[repo][number].get("pr_created"):
@@ -200,7 +257,6 @@ def process_issue(repo, issue, state):
     print(f"\nProcessing issue #{number}")
 
     repo_path = clone_or_update(repo)
-    branch = f"ai/issue-{int(number)}"
 
     try:
         default_branch = get_default_branch(repo)
