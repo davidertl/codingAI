@@ -22,6 +22,7 @@ Status: Implemented (error fingerprint → preferred strategy memory used before
 ## Phase 18 – Research (Local-First)
 - SearxNG service; research cache (query/results/summary TTL).
 - Summaries via local LLM; optional API fallback toggle.
+  Env: `SEARX_URL`, `RESEARCH_CACHE_FILE`, `RESEARCH_CACHE_TTL_SECONDS`, `RESEARCH_MAX_RESULTS`, `RESEARCH_ENABLE_SUMMARY`, `RESEARCH_SUMMARY_MODEL`, `RESEARCH_SUMMARY_MAX_TOKENS`.
 
 Status: Implemented (SearxNG-backed search with cache + LLM summary; `/research` API).
 ## Phase 17 – Containerized Execution
