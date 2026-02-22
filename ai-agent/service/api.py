@@ -15,6 +15,7 @@ from core.observability import (
     record_event,
     render_prometheus_metrics,
     set_gauge,
+    redact_dict,
 )
 from core.research import research
 import main
@@ -477,6 +478,7 @@ def metrics_json():
 def events(limit: int = 100, repo: str | None = None, event: str | None = None):
     limit = max(1, min(int(limit), 1000))
     items = read_recent_events(limit=limit, repo=repo, event=event)
+    items = [redact_dict(i) if isinstance(i, dict) else i for i in items]
     return {
         "time_utc": _utc_now_iso(),
         "count": len(items),

@@ -1,5 +1,5 @@
 # Agent Architecture (Current)
-Version: 1.6.0
+Version: 1.7.0
 
 ## Core pipeline (current)
 
@@ -18,6 +18,7 @@ Version: 1.6.0
 - `core/test_runner.py`: repo analysis; docker/dotnet/node strategies; LLM-guided strategy switching; strategy memory/quarantine; error extraction.
 - `core/research.py`: SearxNG-backed search with TTL cache and optional LLM summary.
 - `strategy_error_memory`: persisted mapping from error fingerprint → preferred strategy to bias future runs.
+- `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`; redaction for sensitive keys in event payloads.
 - `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`.
 - `llm/provider.py`: provider chain (openai/local/auto), health checks, failover, telemetry; resolves env from `paths.ENV_FILE`.
 - `llm/patch_llm.py`: patch + optional test-patch generation with schema validation.

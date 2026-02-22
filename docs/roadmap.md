@@ -1,5 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.5
+Version: 1.3.6
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
@@ -9,6 +9,8 @@ Version: 1.3.5
 ## Phase 20 – Secrets & Safety (Local)
 - PEM/API key upload rules: size/type validation, overwrite policy, fingerprint stored, audit entry; never echo secret content.
 - Redaction for logs/metrics; lightweight prompt-safety filter even in local mode.
+
+Status: Partially implemented (events API redacts common secret keys, long strings truncated; PEM upload already validated).
 
 ## Phase 19 – Memory & Reuse
 - Strategy memory/quarantine persisted (to move to SQLite); error fingerprints map to successful strategy chains.
