@@ -1,4 +1,5 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
+Version: 1.3.0
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.

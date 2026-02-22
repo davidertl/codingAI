@@ -1,4 +1,5 @@
 # Local LLM Setup
+Version: 1.0.1
 
 Source of truth: `ai-agent/llm/provider.py`
 

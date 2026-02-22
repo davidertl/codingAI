@@ -21,6 +21,8 @@ from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from paths import ENV_FILE, GITHUB_APP_PEM_FILE, setup_status
+from github.app_auth import get_installation_token
+from github.repo_manager import list_installation_repos
 
 SERVICE_POLL_INTERVAL_SECONDS = int(os.getenv("SERVICE_POLL_INTERVAL_SECONDS", str(main.POLL_INTERVAL)))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -314,6 +316,51 @@ async def setup_pem(pem: UploadFile = File(...)):
     os.chmod(GITHUB_APP_PEM_FILE, 0o600)
     fingerprint = hashlib.sha256(content).hexdigest()
     return {"status": "ok", "fingerprint": fingerprint, "setup": setup_status()}
+
+
+@app.get("/projects")
+def projects():
+    state = main.load_state()
+    enabled = set(state.get("projects_enabled", []))
+    try:
+        token = get_installation_token()
+        repos = list_installation_repos(token)
+    except Exception:
+        repos = main.get_available_repos()
+    projects = []
+    for repo in repos:
+        projects.append(
+            {
+                "repo": repo,
+                "enabled": repo in enabled or not enabled,  # default enable all if none set
+            }
+        )
+    return {
+        "time_utc": _utc_now_iso(),
+        "projects": projects,
+    }
+
+
+def _set_project_enabled(repo: str, enabled: bool):
+    state = main.load_state()
+    enabled_set = set(state.get("projects_enabled", []))
+    if enabled:
+        enabled_set.add(repo)
+    else:
+        enabled_set.discard(repo)
+    state["projects_enabled"] = sorted(enabled_set)
+    main.save_state(state)
+    return {"repo": repo, "enabled": enabled, "projects_enabled": state["projects_enabled"]}
+
+
+@app.post("/projects/{repo}/enable")
+def enable_project(repo: str):
+    return _set_project_enabled(repo, True)
+
+
+@app.post("/projects/{repo}/disable")
+def disable_project(repo: str):
+    return _set_project_enabled(repo, False)
 
 @app.get("/metrics/json")
 def metrics_json():

@@ -1,4 +1,5 @@
 # Current State
+Version: 1.2.0
 
 This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
 

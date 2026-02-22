@@ -1,10 +1,38 @@
 import os
 import subprocess
 
+import requests
+
 GITHUB_OWNER = "davidertl"
 from paths import WORKSPACES_DIR
 
 WORKSPACE_ROOT = str(WORKSPACES_DIR)
+
+
+def list_installation_repos(token: str) -> list[str]:
+    """
+    List repositories accessible to the GitHub App installation.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    repos = []
+    page = 1
+    while True:
+        r = requests.get(
+            f"https://api.github.com/installation/repositories",
+            headers=headers,
+            params={"per_page": 100, "page": page},
+        )
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("repositories", []) if isinstance(data, dict) else []
+        repos.extend([item.get("name") for item in items if item.get("name")])
+        if len(items) < 100:
+            break
+        page += 1
+    return repos
 
 
 def _run(cmd, *, cwd=None, check=True):

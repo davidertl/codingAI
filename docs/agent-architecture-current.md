@@ -1,4 +1,5 @@
 # Agent Architecture (Current)
+Version: 1.1.0
 
 ## Core pipeline (current)
 
