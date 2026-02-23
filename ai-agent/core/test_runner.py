@@ -1,13 +1,16 @@
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
-import urllib.error
-import urllib.request
+from urllib.parse import urlparse
+
+import requests
 
 from llm.strategy_llm import pick_next_strategy
 
@@ -38,6 +41,29 @@ PLAYWRIGHT_CONFIG_NAMES = (
 SEMGREP_DOCKER_IMAGE = os.getenv("SEMGREP_DOCKER_IMAGE", "returntocorp/semgrep:latest").strip()
 TRIVY_DOCKER_IMAGE = os.getenv("TRIVY_DOCKER_IMAGE", "aquasec/trivy:latest").strip()
 SONAR_SCANNER_DOCKER_IMAGE = os.getenv("SONAR_SCANNER_DOCKER_IMAGE", "sonarsource/sonar-scanner-cli:latest").strip()
+DEFAULT_SECURITY_SCAN_EXCLUDES = (
+    ".git",
+    ".playwright",
+    ".playwright-cli",
+    "output",
+    "workspaces",
+)
+BANDIT_DEFAULT_EXCLUDES = (
+    ".git",
+    ".playwright",
+    ".playwright-cli",
+    "output",
+    "workspaces",
+    ".venv",
+    "venv",
+    "venv_user",
+    "site-packages",
+    "ai-agent/venv",
+    "ai-agent/venv_user",
+    "*/site-packages/*",
+    "*/venv/*",
+    "*/venv_user/*",
+)
 
 
 def _run(cmd, *, cwd=None, env=None):
@@ -70,6 +96,28 @@ def _run_and_combine(cmd, *, cwd=None, env=None):
     res = _run(cmd, cwd=cwd, env=env)
     out = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
     return res.returncode == 0, out
+
+
+def _csv_list(value: str | None, fallback: tuple[str, ...] = ()) -> list[str]:
+    source = str(value or "").strip()
+    if not source:
+        return [item for item in fallback if str(item).strip()]
+    return [item.strip() for item in source.split(",") if item.strip()]
+
+
+def _git_tracked_python_files(repo_path: str) -> list[str]:
+    res = _run(["git", "ls-files", "*.py"], cwd=repo_path)
+    if res.returncode != 0:
+        return []
+    files = []
+    for line in (res.stdout or "").splitlines():
+        rel = line.strip()
+        if not rel:
+            continue
+        abs_path = os.path.join(repo_path, rel)
+        if os.path.isfile(abs_path):
+            files.append(rel)
+    return files
 
 
 def _sonarqube_configured() -> bool:
@@ -176,7 +224,17 @@ def _terminate_process(proc: subprocess.Popen | None) -> None:
 
 
 def _fingerprint(s: str) -> str:
-    return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
+def _validate_http_url(url: str) -> str:
+    target = str(url or "").strip()
+    parsed = urlparse(target)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"Unsupported URL scheme for test_runner HTTP call: {parsed.scheme or '(missing)'}")
+    if not parsed.netloc:
+        raise ValueError("HTTP URL is missing host component.")
+    return target
 
 
 def _extract_relevant_error_lines(text: str, max_lines: int = 80, max_chars: int = 4000) -> str:
@@ -597,6 +655,7 @@ def strat_node_build_docker(repo_path: str, repo_analysis: dict):
 def strat_semgrep_scan(repo_path: str):
     config = os.getenv("SEMGREP_CONFIG", "p/ci").strip() or "p/ci"
     metrics_mode = os.getenv("SEMGREP_METRICS", "off").strip().lower() or "off"
+    excludes = _csv_list(os.getenv("SEMGREP_EXCLUDE"), DEFAULT_SECURITY_SCAN_EXCLUDES)
     if config == "auto" and metrics_mode == "off":
         # semgrep rejects auto config when metrics are forced off.
         metrics_mode = "auto"
@@ -612,6 +671,8 @@ def strat_semgrep_scan(repo_path: str):
         "--error",
         ".",
     ]
+    for excluded in excludes:
+        semgrep_args.extend(["--exclude", excluded])
     if _command_exists("semgrep"):
         return _run_and_combine(["semgrep"] + semgrep_args, cwd=repo_path)
 
@@ -639,10 +700,27 @@ def strat_bandit_scan(repo_path: str, repo_analysis: dict):
     if not repo_analysis.get("has_python_files"):
         return False, "No Python files found for bandit strategy."
 
+    level_map = {"low": "-l", "medium": "-ll", "high": "-lll"}
+    confidence_map = {"low": "-i", "medium": "-ii", "high": "-iii"}
+    min_level = os.getenv("BANDIT_MIN_SEVERITY", "medium").strip().lower()
+    min_conf = os.getenv("BANDIT_MIN_CONFIDENCE", "medium").strip().lower()
+    excludes = _csv_list(os.getenv("BANDIT_EXCLUDE"), BANDIT_DEFAULT_EXCLUDES)
+    excludes_csv = ",".join(excludes)
+
+    tracked_files = _git_tracked_python_files(repo_path)
+    bandit_args = ["-f", "txt", "-q", level_map.get(min_level, "-ll"), confidence_map.get(min_conf, "-ii")]
+    if tracked_files:
+        bandit_args.extend(tracked_files)
+    else:
+        bandit_args.extend(["-r", "."])
+        if excludes_csv:
+            bandit_args.extend(["-x", excludes_csv])
+
     if _command_exists("bandit"):
-        return _run_and_combine(["bandit", "-r", ".", "-f", "txt", "-q"], cwd=repo_path)
+        return _run_and_combine(["bandit"] + bandit_args, cwd=repo_path)
 
     if _docker_available():
+        bandit_cmd = "bandit " + " ".join(bandit_args)
         return _run_and_combine(
             [
                 "docker",
@@ -656,7 +734,7 @@ def strat_bandit_scan(repo_path: str, repo_analysis: dict):
                 "bash",
                 "-lc",
                 "pip install --disable-pip-version-check --no-cache-dir bandit >/tmp/bandit-install.log 2>&1 && "
-                "bandit -r . -f txt -q",
+                f"{bandit_cmd}",
             ]
         )
 
@@ -667,6 +745,8 @@ def strat_trivy_scan(repo_path: str):
     severity = os.getenv("TRIVY_SEVERITY", "HIGH,CRITICAL").strip() or "HIGH,CRITICAL"
     scanners = os.getenv("TRIVY_SCANNERS", "vuln,misconfig,secret").strip() or "vuln,misconfig,secret"
     timeout = os.getenv("TRIVY_TIMEOUT", "5m").strip() or "5m"
+    skip_dirs = _csv_list(os.getenv("TRIVY_SKIP_DIRS"), DEFAULT_SECURITY_SCAN_EXCLUDES)
+    skip_files = _csv_list(os.getenv("TRIVY_SKIP_FILES"), ("ai-agent/github_app/github-app.pem",))
 
     trivy_args = [
         "fs",
@@ -680,6 +760,10 @@ def strat_trivy_scan(repo_path: str):
     ]
     if os.getenv("TRIVY_IGNORE_UNFIXED", "true").strip().lower() in _TRUTHY:
         trivy_args.append("--ignore-unfixed")
+    for path in skip_dirs:
+        trivy_args.extend(["--skip-dirs", path])
+    for path in skip_files:
+        trivy_args.extend(["--skip-files", path])
 
     scanners_legacy = ",".join(
         "config" if item.strip().lower() == "misconfig" else item.strip()
@@ -784,6 +868,7 @@ def strat_sonarqube_scan(repo_path: str, repo_name: str):
 
 
 def _wait_for_http(url: str, timeout_seconds: int, *, proc: subprocess.Popen | None = None):
+    checked_url = _validate_http_url(url)
     deadline = time.time() + max(1, int(timeout_seconds))
     last_error = ""
 
@@ -791,24 +876,25 @@ def _wait_for_http(url: str, timeout_seconds: int, *, proc: subprocess.Popen | N
         if proc is not None and proc.poll() is not None:
             return False, f"Server exited early with code {proc.returncode}."
         try:
-            with urllib.request.urlopen(url, timeout=2) as resp:
-                status = int(getattr(resp, "status", 200))
-                if status < 500:
-                    return True, f"HTTP {status}"
-                last_error = f"HTTP {status}"
-        except urllib.error.URLError as e:
-            last_error = str(e.reason)
+            response = requests.get(checked_url, timeout=2, allow_redirects=True)
+            status = int(response.status_code)
+            if status < 500:
+                return True, f"HTTP {status}"
+            last_error = f"HTTP {status}"
+        except requests.RequestException as e:
+            last_error = str(e)
         except Exception as e:
             last_error = str(e)
         time.sleep(1)
 
-    return False, f"Timed out waiting for {url}. last_error={last_error}"
+    return False, f"Timed out waiting for {checked_url}. last_error={last_error}"
 
 
 def _http_get_json(url: str, timeout: int = 15):
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        raw = resp.read().decode("utf-8", errors="ignore")
-    return json.loads(raw)
+    checked_url = _validate_http_url(url)
+    response = requests.get(checked_url, timeout=max(1, int(timeout)), allow_redirects=True)
+    response.raise_for_status()
+    return response.json()
 
 
 def _dashboard_repo_value(repos, repo_name: str, field: str):
@@ -1356,7 +1442,7 @@ def _playwright_smoke(base_url: str, project_dir: str, *, nav_timeout_ms: int, m
         return False, f"Playwright Python package unavailable: {e}"
 
     run_id = f"{_fingerprint(project_dir)}-{int(time.time())}"
-    screenshot_path = os.path.join("/tmp", f"codingai-web-smoke-{run_id}.png")
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"codingai-web-smoke-{run_id}.png")
     browser_logs = []
 
     profile = os.getenv("WEB_SMOKE_PROFILE", "").strip().lower()
@@ -1544,7 +1630,10 @@ def strat_web_live_playwright(repo_path: str, repo_analysis: dict):
     server_env["HOST"] = host
     server_env["PORT"] = str(port)
     server_env["CI"] = "1"
-    log_path = os.path.join("/tmp", f"codingai-web-server-{_fingerprint(project_dir)}-{int(time.time())}.log")
+    log_path = os.path.join(
+        tempfile.gettempdir(),
+        f"codingai-web-server-{_fingerprint(project_dir)}-{int(time.time())}.log",
+    )
 
     server_variants = [
         ["npm", "run", server_script, "--", "--host", host, "--port", str(port)],
