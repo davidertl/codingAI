@@ -72,6 +72,10 @@ def _run_and_combine(cmd, *, cwd=None, env=None):
     return res.returncode == 0, out
 
 
+def _sonarqube_configured() -> bool:
+    return bool(os.getenv("SONAR_HOST_URL", "").strip() and os.getenv("SONAR_TOKEN", "").strip())
+
+
 def _compose_base_cmd() -> list[str]:
     """
     Prefer Docker Compose plugin, fallback to standalone docker-compose binary.
@@ -591,21 +595,25 @@ def strat_node_build_docker(repo_path: str, repo_analysis: dict):
 
 
 def strat_semgrep_scan(repo_path: str):
-    config = os.getenv("SEMGREP_CONFIG", "auto").strip() or "auto"
+    config = os.getenv("SEMGREP_CONFIG", "p/ci").strip() or "p/ci"
+    metrics_mode = os.getenv("SEMGREP_METRICS", "off").strip().lower() or "off"
+    if config == "auto" and metrics_mode == "off":
+        # semgrep rejects auto config when metrics are forced off.
+        metrics_mode = "auto"
+    if metrics_mode not in {"on", "off", "auto"}:
+        metrics_mode = "off"
+
+    semgrep_args = [
+        "scan",
+        "--config",
+        config,
+        "--json",
+        f"--metrics={metrics_mode}",
+        "--error",
+        ".",
+    ]
     if _command_exists("semgrep"):
-        return _run_and_combine(
-            [
-                "semgrep",
-                "scan",
-                "--config",
-                config,
-                "--json",
-                "--metrics=off",
-                "--error",
-                ".",
-            ],
-            cwd=repo_path,
-        )
+        return _run_and_combine(["semgrep"] + semgrep_args, cwd=repo_path)
 
     if _docker_available():
         image = SEMGREP_DOCKER_IMAGE or "returntocorp/semgrep:latest"
@@ -620,14 +628,8 @@ def strat_semgrep_scan(repo_path: str):
                 "/src",
                 image,
                 "semgrep",
-                "scan",
-                "--config",
-                config,
-                "--json",
-                "--metrics=off",
-                "--error",
-                ".",
             ]
+            + semgrep_args
         )
 
     return False, "Semgrep not available (missing local semgrep binary and docker fallback)."
@@ -668,8 +670,6 @@ def strat_trivy_scan(repo_path: str):
 
     trivy_args = [
         "fs",
-        "--scanners",
-        scanners,
         "--severity",
         severity,
         "--exit-code",
@@ -681,10 +681,16 @@ def strat_trivy_scan(repo_path: str):
     if os.getenv("TRIVY_IGNORE_UNFIXED", "true").strip().lower() in _TRUTHY:
         trivy_args.append("--ignore-unfixed")
 
-    if _command_exists("trivy"):
-        return _run_and_combine(["trivy"] + trivy_args + ["."], cwd=repo_path)
+    scanners_legacy = ",".join(
+        "config" if item.strip().lower() == "misconfig" else item.strip()
+        for item in scanners.split(",")
+        if item.strip()
+    ) or "vuln,config,secret"
 
-    if _docker_available():
+    def _run_trivy_local(extra_args: list[str]):
+        return _run_and_combine(["trivy"] + trivy_args + extra_args + ["."], cwd=repo_path)
+
+    def _run_trivy_docker(extra_args: list[str]):
         image = TRIVY_DOCKER_IMAGE or "aquasec/trivy:latest"
         return _run_and_combine(
             [
@@ -696,11 +702,23 @@ def strat_trivy_scan(repo_path: str):
                 "-w",
                 "/src",
                 image,
-                "trivy",
             ]
             + trivy_args
+            + extra_args
             + ["/src"]
         )
+
+    if _command_exists("trivy"):
+        ok, out = _run_trivy_local(["--scanners", scanners])
+        if "unknown flag: --scanners" in (out or "").lower():
+            return _run_trivy_local(["--security-checks", scanners_legacy])
+        return ok, out
+
+    if _docker_available():
+        ok, out = _run_trivy_docker(["--scanners", scanners])
+        if "unknown flag: --scanners" in (out or "").lower():
+            return _run_trivy_docker(["--security-checks", scanners_legacy])
+        return ok, out
 
     return False, "Trivy not available (missing local trivy binary and docker fallback)."
 
@@ -812,6 +830,17 @@ def _playwright_dashboard_checks(page, base_url: str):
     original_project_exists = False
 
     try:
+        page.evaluate(
+            """
+            (() => {
+              if (window.state && window.state.refreshTimer) {
+                clearInterval(window.state.refreshTimer);
+                window.state.refreshTimer = null;
+              }
+            })();
+            """
+        )
+
         repos_before = _http_get_json(f"{base_url.rstrip('/')}/repos")
         if not isinstance(repos_before, list) or not repos_before:
             return False, ["dashboard_check_error=no repos found from /repos"]
@@ -845,6 +874,17 @@ def _playwright_dashboard_checks(page, base_url: str):
         lines.append(f"queue_actions_present={queue_actions_present}")
         if not queue_actions_present:
             ok = False
+
+        tracked_cards = page.locator("#trackedWrap .issue")
+        tracked_cards_count = tracked_cards.count()
+        lines.append(f"tracked_cards_count={tracked_cards_count}")
+        if tracked_cards_count > 0:
+            prompt_field_present = tracked_cards.first.locator("textarea[data-prompt]").count() > 0
+            rerun_button_present = tracked_cards.first.get_by_role("button", name="Send + Rerun").count() > 0
+            lines.append(f"tracked_prompt_field_present={prompt_field_present}")
+            lines.append(f"tracked_rerun_button_present={rerun_button_present}")
+            if not prompt_field_present or not rerun_button_present:
+                ok = False
 
         notes_visible_initial = page.locator("#notesEditor").first.is_visible()
         lines.append(f"notes_visible_initial={notes_visible_initial}")
@@ -947,7 +987,12 @@ def _playwright_dashboard_checks(page, base_url: str):
             ok = False
 
         # Settings tab switch + workers pane check.
-        page.locator(".settings-tab[data-settings-tab='workers']").first.click(timeout=5000)
+        workers_tab = page.locator(".settings-tab[data-settings-tab='workers']").first
+        workers_tab.scroll_into_view_if_needed(timeout=5000)
+        try:
+            workers_tab.click(timeout=5000)
+        except Exception:
+            workers_tab.click(timeout=5000, force=True)
         page.wait_for_timeout(800)
         workers_meta = (page.locator("#workersSettingsMeta").first.inner_text() or "").strip()
         lines.append(f"workers_settings_meta={workers_meta}")
@@ -1665,7 +1710,8 @@ def run_tests(
         strategies.append({"id": "trivy_scan", "desc": "trivy filesystem security scan", "kind": "security"})
         if repo_analysis.get("has_python_files"):
             strategies.append({"id": "bandit_scan", "desc": "bandit python security scan", "kind": "security"})
-        strategies.append({"id": "sonarqube_scan", "desc": "sonarqube scanner analysis", "kind": "security"})
+        if _sonarqube_configured():
+            strategies.append({"id": "sonarqube_scan", "desc": "sonarqube scanner analysis", "kind": "security"})
 
     if not strategies:
         out = "No supported test strategy found (repo scan found no docker/dotnet/node/web markers)."
