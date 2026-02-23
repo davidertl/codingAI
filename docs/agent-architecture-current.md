@@ -1,5 +1,5 @@
 # Agent Architecture (Current)
-Version: 1.8.0
+Version: experimental-0.21.0
 
 ## Core pipeline (current)
 

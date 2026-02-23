@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import time
+import copy
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -9,6 +10,7 @@ from dotenv import load_dotenv
 from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
+from core.projects_store import get_project_push_gate_mode
 from core.test_runner import analyze_repo, run_tests
 from github.checks_manager import create_completed_check_run
 from github.ci_status import get_pr_ci_status
@@ -28,15 +30,19 @@ from github.pr_manager import (
     has_ai_stop_comment,
     upsert_pr_comment,
 )
-from github.repo_manager import clone_or_update, prepare_job_worktree, cleanup_jobs, disk_usage_report
+from github.repo_manager import (
+    clone_or_update,
+    prepare_job_worktree,
+    cleanup_jobs,
+    disk_usage_report,
+    list_installation_repos,
+)
+from github.app_auth import get_installation_token
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
 from paths import ENV_FILE, STATE_FILE
 
-AVAILABLE_REPOS = [
-    "KRT-leadtool",
-    "KRT-Com_Discord",
-]
+AVAILABLE_REPOS = []
 TARGET_REPOS_ENV = os.getenv("TARGET_REPOS", "").strip()
 if TARGET_REPOS_ENV:
     AVAILABLE_REPOS = [r.strip() for r in TARGET_REPOS_ENV.split(",") if r.strip()]
@@ -66,6 +72,10 @@ def save_state(state):
 def choose_repo():
     if RUN_ALL_REPOS:
         return "__all__"
+
+    if not AVAILABLE_REPOS:
+        print("No repositories configured. Set TARGET_REPOS or configure GitHub installation access.")
+        exit(1)
 
     print("Select repository to work on:")
     for idx, repo in enumerate(AVAILABLE_REPOS):
@@ -1441,7 +1451,7 @@ def _run_repo_cycle(repo):
     record_event("repo_cycle_start", repo=repo, status="started")
 
     state = load_state()
-    repo_policy = get_repo_policy(repo)
+    repo_policy = get_repo_policy_config(repo, force=False, apply_project_push_gate=True)
 
     llm_ready = ensure_llm_ready(force=False)
     llm_runtime = get_llm_runtime_status()
@@ -1511,11 +1521,57 @@ def run_repo_cycle_once(repo):
 
 
 def get_available_repos():
-    return list(AVAILABLE_REPOS)
+    def _installation_repos():
+        try:
+            token = get_installation_token()
+            repos = list_installation_repos(token)
+            cleaned = []
+            for r in repos:
+                name = str(r or "").strip()
+                if name:
+                    cleaned.append(name)
+            return cleaned
+        except Exception as e:
+            record_event(
+                "installation_repos_error",
+                status="warn",
+                data={"error": str(e)[:200]},
+            )
+            return []
+
+    aggregated = []
+    seen = set()
+
+    for src in (_installation_repos(), AVAILABLE_REPOS):
+        for repo in src:
+            name = str(repo or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            aggregated.append(name)
+
+    return aggregated
 
 
-def get_repo_policy_config(repo, force=False):
-    return get_repo_policy(repo, force=force)
+def _apply_project_push_gate_override(repo: str, policy: dict) -> dict:
+    if not isinstance(policy, dict):
+        return policy
+    out = copy.deepcopy(policy)
+    approval = out.setdefault("approval", {})
+    default_mode = "manual" if bool(approval.get("required", False)) else "auto_10s"
+    mode = get_project_push_gate_mode(repo, default=default_mode)
+    approval["required"] = mode == "manual"
+    meta = out.setdefault("_meta", {})
+    if isinstance(meta, dict):
+        meta["project_push_gate_mode"] = mode
+    return out
+
+
+def get_repo_policy_config(repo, force=False, apply_project_push_gate=True):
+    policy = get_repo_policy(repo, force=force)
+    if apply_project_push_gate:
+        return _apply_project_push_gate_override(repo, policy)
+    return policy
 
 
 def get_policies_config(force=False):

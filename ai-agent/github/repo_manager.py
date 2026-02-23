@@ -5,7 +5,7 @@ import shutil
 
 import requests
 
-GITHUB_OWNER = "davidertl"
+from github.config import get_github_owner
 from paths import WORKSPACES_DIR
 
 WORKSPACE_ROOT = str(WORKSPACES_DIR)
@@ -48,6 +48,9 @@ def _run(cmd, *, cwd=None, check=True):
 
 
 def ensure_repo_mirror(repo_name: str) -> str:
+    owner = get_github_owner()
+    if not owner:
+        raise RuntimeError("GITHUB_OWNER is not configured")
     os.makedirs(REPOS_ROOT, exist_ok=True)
     repo_path = os.path.join(REPOS_ROOT, repo_name)
 
@@ -55,7 +58,7 @@ def ensure_repo_mirror(repo_name: str) -> str:
         _run(["git", "fetch", "--prune"], cwd=repo_path)
     else:
         _run(
-            ["git", "clone", f"https://github.com/{GITHUB_OWNER}/{repo_name}.git", repo_path],
+            ["git", "clone", f"https://github.com/{owner}/{repo_name}.git", repo_path],
             cwd=REPOS_ROOT,
         )
     return repo_path

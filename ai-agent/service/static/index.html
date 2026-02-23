@@ -23,6 +23,9 @@
       --accent-2: #8de0b6;
       --shadow: 0 14px 44px rgba(3, 10, 14, 0.4);
       --radius: 16px;
+      --sidebar-width: 360px;
+      --sidebar-min: 260px;
+      --sidebar-max: 520px;
     }
 
     * { box-sizing: border-box; }
@@ -39,13 +42,39 @@
       letter-spacing: 0.01em;
     }
 
-    .grid {
+    .layout {
       min-height: 100%;
-      display: grid;
-      grid-template-columns: 330px 1fr;
+      display: flex;
       gap: 18px;
       padding: 18px;
+      align-items: flex-start;
     }
+
+    .sidebar {
+      width: var(--sidebar-width);
+      min-width: var(--sidebar-min);
+      max-width: var(--sidebar-max);
+      position: relative;
+      transition: width .2s ease;
+    }
+
+    body.sidebar-hidden .sidebar { display: none; }
+    body.sidebar-hidden .layout { gap: 0; }
+
+    .sidebar-reopen {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 120;
+      display: none;
+      padding: 6px 9px;
+      border-radius: 999px;
+      background: rgba(12, 26, 33, 0.96);
+    }
+
+    body.sidebar-hidden .sidebar-reopen { display: inline-flex; }
+
+    .main-panel { flex: 1; min-width: 0; }
 
     .panel {
       background: var(--surface);
@@ -57,10 +86,54 @@
       animation: enter .38s ease both;
     }
 
-    .panel .hd {
-      padding: 16px 18px 12px;
+    .sidebar-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px 10px;
       border-bottom: 1px solid var(--line);
-      background: linear-gradient(160deg, rgba(62, 113, 126, 0.2), rgba(18, 33, 38, 0));
+      background: linear-gradient(150deg, rgba(82, 199, 209, 0.14), rgba(18, 33, 38, 0));
+    }
+
+    .sidebar-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .ghost {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02);
+      color: var(--text);
+      padding: 6px 8px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: border-color .15s ease, color .15s ease, background .15s ease;
+    }
+
+    .ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    #sidebarHandle {
+      position: absolute;
+      top: 12px;
+      right: -7px;
+      width: 12px;
+      height: calc(100% - 24px);
+      cursor: col-resize;
+      border-radius: 10px;
+      background: rgba(82, 199, 209, 0.12);
+      border: 1px solid var(--line);
+      transition: background .2s ease;
+    }
+
+    #sidebarHandle:hover { background: rgba(82, 199, 209, 0.22); }
+    body.sidebar-hidden #sidebarHandle { display: none; }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin: 10px 12px 8px;
     }
 
     .title {
@@ -70,20 +143,7 @@
       letter-spacing: 0.02em;
     }
 
-    .subtitle {
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 0.85rem;
-    }
-
     .stack { padding: 14px; display: grid; gap: 12px; }
-
-    .kpis {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 10px;
-    }
 
     .kpi {
       background: var(--surface-strong);
@@ -180,7 +240,7 @@
 
     .content {
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto 1fr;
       gap: 16px;
       padding: 16px;
     }
@@ -200,47 +260,70 @@
       margin-bottom: 10px;
     }
 
+    .box-body { display: grid; gap: 10px; }
+    .box.collapsed .box-body { display: none; }
+
+    .collapse-toggle {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02);
+      color: var(--text);
+      padding: 4px 6px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform .2s ease, border-color .2s ease, color .2s ease;
+    }
+
+    .collapse-toggle:hover { border-color: var(--accent); color: var(--accent); }
+    .box.collapsed .collapse-toggle { transform: rotate(-90deg); }
+
     .mono {
       font-family: "IBM Plex Mono", monospace;
       font-size: 0.75rem;
       color: var(--muted);
     }
 
-    table {
+    .settings-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      margin-bottom: 4px;
+    }
+
+    .settings-tab {
+      padding: 6px 10px;
+      font-size: 0.74rem;
+      border-radius: 999px;
+      background: rgba(13, 28, 34, 0.95);
+    }
+
+    .settings-tab.active {
+      border-color: rgba(100, 204, 180, 0.7);
+      background: rgba(51, 123, 131, 0.45);
+      color: var(--accent-2);
+    }
+
+    .settings-pane { display: none; }
+    .settings-pane.active { display: grid; gap: 10px; }
+
+    .input-with-action {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    textarea {
       width: 100%;
-      border-collapse: collapse;
-      font-size: 0.81rem;
-    }
-
-    pre {
-      background: rgba(9, 21, 26, 0.7);
-      border: 1px solid var(--line);
-      border-radius: 10px;
+      min-height: 90px;
       padding: 10px;
-      overflow-x: auto;
-      font-family: "IBM Plex Mono", monospace;
-      font-size: 0.72rem;
-      color: var(--muted);
-      max-height: 280px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(10, 25, 32, 0.9);
+      color: var(--text);
+      font-size: 0.82rem;
+      resize: vertical;
     }
-
-    th, td {
-      text-align: left;
-      border-bottom: 1px solid rgba(126, 181, 178, 0.2);
-      padding: 7px 6px;
-      vertical-align: top;
-    }
-
-    th {
-      color: var(--muted);
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-weight: 700;
-    }
-
-    a { color: var(--accent-2); text-decoration: none; }
-    a:hover { text-decoration: underline; }
 
     .issues {
       display: grid;
@@ -293,6 +376,44 @@
       font-size: 0.82rem;
     }
 
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.81rem;
+    }
+
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid rgba(126, 181, 178, 0.2);
+      padding: 7px 6px;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+
+    pre {
+      background: rgba(9, 21, 26, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      overflow-x: auto;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      color: var(--muted);
+      max-height: 280px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    a { color: var(--accent-2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
     .toast {
       position: fixed;
       bottom: 14px;
@@ -303,7 +424,7 @@
       padding: 10px 12px;
       font-size: 0.8rem;
       max-width: 420px;
-      z-index: 99;
+      z-index: 140;
       opacity: 0;
       transform: translateY(12px);
       transition: opacity .2s ease, transform .2s ease;
@@ -313,8 +434,8 @@
     .toast.show { opacity: 1; transform: translateY(0); }
 
     @media (max-width: 1080px) {
-      .grid { grid-template-columns: 1fr; }
       .content { padding: 12px; }
+      .layout { padding: 12px; }
     }
 
     @keyframes enter {
@@ -324,79 +445,200 @@
   </style>
 </head>
 <body>
-  <main class="grid">
-    <section class="panel">
-      <div class="hd">
-        <h1 class="title">CodingAI Dashboard</h1>
-        <div class="subtitle">Phase 12: autonomy tuning, staged fallback, governance, CI and observability</div>
-        <div class="kpis">
-          <div class="kpi">
-            <div class="k">LLM</div>
-            <div class="v" id="llmStatus">-</div>
-          </div>
-          <div class="kpi">
-            <div class="k">Workers</div>
-            <div class="v" id="workersCount">0</div>
-          </div>
-          <div class="kpi">
-            <div class="k">Provider</div>
-            <div class="v" id="providerName">-</div>
-          </div>
-          <div class="kpi">
-            <div class="k">Server Time</div>
-            <div class="v mono" id="serverTime">-</div>
-          </div>
+  <button id="sidebarReopenBtn" class="ghost sidebar-reopen" title="Show sidebar">-></button>
+
+  <main class="layout">
+    <aside class="panel sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div>
+          <h1 class="title">CodingAI Dashboard</h1>
+        </div>
+        <div class="sidebar-actions">
+          <button id="sidebarCollapseBtn" class="ghost" title="Hide sidebar"><-</button>
         </div>
       </div>
-      <div class="stack">
-        <section class="box">
-          <div class="hd2">
-            <strong>Setup</strong>
-            <span class="chip" id="setupStatus">-</span>
-          </div>
-          <div class="mono" id="setupMeta">Owner/App/Install/Pem status</div>
-          <form class="stack" id="setupGithubForm">
-            <div class="form-grid">
-              <div>
-                <label for="ghOwner">GitHub Owner</label>
-                <input id="ghOwner" name="owner" placeholder="owner" autocomplete="off" required>
-              </div>
-              <div>
-                <label for="ghAppId">App ID</label>
-                <input id="ghAppId" name="app_id" placeholder="app id" autocomplete="off" required>
-              </div>
-              <div>
-                <label for="ghInstallationId">Installation ID</label>
-                <input id="ghInstallationId" name="installation_id" placeholder="installation id" autocomplete="off" required>
-              </div>
-            </div>
-            <div class="row">
-              <button type="submit" class="primary">Save GitHub IDs</button>
-            </div>
-          </form>
-          <form class="stack" id="setupPemForm" enctype="multipart/form-data">
-            <label for="pemFile">GitHub App PEM</label>
-            <div class="row">
-              <input id="pemFile" name="pem" type="file" accept=".pem" required>
-              <button type="submit">Upload PEM</button>
-            </div>
-            <div class="mono" id="pemStatus">pem not uploaded</div>
-          </form>
-        </section>
-
-        <section class="box">
-          <div class="hd2">
-            <strong>Projects</strong>
-            <span class="mono" id="projectsMeta">-</span>
-          </div>
-          <div id="projectsList"></div>
-        </section>
-
-        <div class="stack" id="repoList"></div>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="k">LLM</div>
+          <div class="v" id="llmStatus">-</div>
+        </div>
+        <div class="kpi">
+          <div class="k">Workers</div>
+          <div class="v" id="workersCount">0</div>
+        </div>
+        <div class="kpi">
+          <div class="k">Provider</div>
+          <div class="v" id="providerName">-</div>
+        </div>
+        <div class="kpi">
+          <div class="k">Server Time</div>
+          <div class="v mono" id="serverTime">-</div>
+        </div>
       </div>
-    </section>
+      <div id="sidebarHandle" title="Drag to resize"></div>
 
-    <section class="panel">
+      <section class="box collapsible open" data-section="projects">
+        <div class="hd2">
+          <strong>Projects</strong>
+          <div class="row">
+            <span class="mono" id="projectsMeta">-</span>
+            <button class="collapse-toggle" data-collapse="projects">v</button>
+          </div>
+        </div>
+        <div class="box-body">
+          <div id="projectsList"></div>
+          <div class="stack" id="repoList"></div>
+        </div>
+      </section>
+
+      <section class="box collapsible open" data-section="notes">
+        <div class="hd2">
+          <strong>Notes for LLM</strong>
+          <div class="row">
+            <span class="mono" id="sidebarRulesStatus">global:- project:- worker:-</span>
+            <button class="collapse-toggle" data-collapse="notes">v</button>
+          </div>
+        </div>
+        <div class="box-body">
+          <p class="mono" style="margin:0;">Global, project, and worker rules are edited in the main panel.</p>
+          <div class="row">
+            <button id="btnOpenNotesEditor">Open Notes Editor</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="box collapsible collapsed" data-section="settings">
+        <div class="hd2">
+          <strong>Settings</strong>
+          <div class="row">
+            <span class="chip" id="setupStatus">-</span>
+            <button class="collapse-toggle" data-collapse="settings">v</button>
+          </div>
+        </div>
+        <div class="box-body">
+          <div class="mono" id="setupMeta">Owner/App/Install/Pem status</div>
+
+          <div class="settings-tabs">
+            <button class="settings-tab" data-settings-tab="github">GitHub</button>
+            <button class="settings-tab" data-settings-tab="workers">Workers</button>
+            <button class="settings-tab" data-settings-tab="llm">LLM</button>
+            <button class="settings-tab" data-settings-tab="pem">PEM</button>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="github">
+            <form class="stack" id="setupGithubForm">
+              <div class="form-grid">
+                <div>
+                  <label for="ghOwner">GitHub Owner</label>
+                  <input id="ghOwner" name="owner" placeholder="owner" autocomplete="off" required>
+                </div>
+                <div>
+                  <label for="ghAppId">App ID</label>
+                  <div class="input-with-action">
+                    <input id="ghAppId" name="app_id" type="password" placeholder="app id" autocomplete="off" required>
+                    <button id="btnShowAppId" type="button">Show</button>
+                  </div>
+                </div>
+                <div>
+                  <label for="ghInstallationId">Installation ID</label>
+                  <div class="input-with-action">
+                    <input id="ghInstallationId" name="installation_id" type="password" placeholder="installation id" autocomplete="off" required>
+                    <button id="btnShowInstallationId" type="button">Show</button>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <button type="submit" class="primary">Update GitHub IDs</button>
+                <button type="button" id="btnClearGithubIds">Clear GitHub IDs</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="workers">
+            <div class="mono" id="workersSettingsMeta">workers: 0</div>
+            <div id="workersSettingsList"></div>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="llm">
+            <form class="stack" id="setupLlmForm">
+              <div class="form-grid">
+                <div>
+                  <label for="llmProvider">LLM Provider</label>
+                  <select id="llmProvider" name="llm_provider">
+                    <option value="openai">openai</option>
+                    <option value="local">local</option>
+                    <option value="auto">auto</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="llmProviderOrder">Provider Order</label>
+                  <input id="llmProviderOrder" name="llm_provider_order" placeholder="local,openai" autocomplete="off">
+                </div>
+                <div>
+                  <label for="openaiBaseUrl">OpenAI Base URL</label>
+                  <input id="openaiBaseUrl" name="openai_base_url" placeholder="https://api.openai.com" autocomplete="off">
+                </div>
+                <div>
+                  <label for="localLlmBaseUrl">Local LLM Base URL</label>
+                  <input id="localLlmBaseUrl" name="local_llm_base_url" placeholder="http://127.0.0.1:11434" autocomplete="off">
+                </div>
+                <div>
+                  <label for="localLlmApiMode">Local LLM API Mode</label>
+                  <select id="localLlmApiMode" name="local_llm_api_mode">
+                    <option value="chat">chat</option>
+                    <option value="responses">responses</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="localLlmProfile">Local LLM Profile</label>
+                  <select id="localLlmProfile" name="local_llm_profile">
+                    <option value="auto">auto</option>
+                    <option value="gpu16">gpu16</option>
+                    <option value="gpu24">gpu24</option>
+                    <option value="cpu">cpu</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="localLlmModel">Local LLM Model</label>
+                  <input id="localLlmModel" name="local_llm_model" placeholder="optional model" autocomplete="off">
+                </div>
+                <div>
+                  <label for="openaiApiKey">OpenAI API Key (optional)</label>
+                  <input id="openaiApiKey" name="openai_api_key" type="password" autocomplete="new-password">
+                </div>
+                <div class="row" style="align-items:flex-end;">
+                  <label><input type="checkbox" id="openaiApiKeyClear" name="openai_api_key_clear" value="1"> Clear saved OpenAI key</label>
+                </div>
+                <div>
+                  <label for="localLlmApiKey">Local LLM API Key (optional)</label>
+                  <input id="localLlmApiKey" name="local_llm_api_key" type="password" autocomplete="new-password">
+                </div>
+                <div class="row" style="align-items:flex-end;">
+                  <label><input type="checkbox" id="localLlmApiKeyClear" name="local_llm_api_key_clear" value="1"> Clear saved local key</label>
+                </div>
+              </div>
+              <div class="row">
+                <button type="submit">Save LLM Settings</button>
+              </div>
+              <div class="mono" id="llmSetupStatus">LLM setup status</div>
+            </form>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="pem">
+            <form class="stack" id="setupPemForm" enctype="multipart/form-data">
+              <label for="pemFile">GitHub App PEM</label>
+              <div class="row">
+                <input id="pemFile" name="pem" type="file" accept=".pem" required>
+                <button type="submit">Upload PEM</button>
+              </div>
+              <div class="mono" id="pemStatus">pem not uploaded</div>
+            </form>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel main-panel">
       <div class="content">
         <section class="box">
           <div class="hd2">
@@ -431,6 +673,36 @@
           </div>
           <div id="trackedWrap"></div>
         </section>
+
+        <section class="box" id="notesEditor">
+          <div class="hd2">
+            <strong>Notes for LLM</strong>
+            <span class="mono" id="rulesMeta">Select a project to edit project/worker rules.</span>
+          </div>
+
+          <label for="rulesGlobalInput">Global Rules</label>
+          <textarea id="rulesGlobalInput" placeholder="Global rules applied to all LLM tasks."></textarea>
+          <div class="row">
+            <button id="btnSaveGlobalRules">Save Global Rules</button>
+          </div>
+
+          <label for="rulesProjectInput" id="rulesProjectLabel">Project Rules</label>
+          <textarea id="rulesProjectInput" placeholder="Project-specific rules (inherits global if empty)." disabled></textarea>
+          <div class="row">
+            <button id="btnSaveProjectRules" disabled>Save Project Rules</button>
+            <button id="btnResetProjectRules" disabled>Reset to Global</button>
+          </div>
+
+          <label for="rulesWorkerInput" id="rulesWorkerLabel">Worker Rules</label>
+          <textarea id="rulesWorkerInput" placeholder="Worker-specific rules (inherits project if empty)." disabled></textarea>
+          <div class="row">
+            <button id="btnSaveWorkerRules" disabled>Save Worker Rules</button>
+            <button id="btnResetWorkerRules" disabled>Reset to Project</button>
+          </div>
+
+          <label for="rulesEffectivePreview">Effective Rules Preview</label>
+          <pre id="rulesEffectivePreview">No rules loaded.</pre>
+        </section>
       </div>
     </section>
   </main>
@@ -444,11 +716,24 @@
       health: null,
       summary: null,
       setup: null,
+      setupValues: null,
       projects: [],
+      workers: [],
+      projectsSource: "unknown",
+      rules: {
+        global: null,
+        project: null,
+        worker: null,
+        effective: null,
+      },
       refreshTimer: null,
     };
 
     const el = {
+      sidebar: document.getElementById("sidebar"),
+      sidebarHandle: document.getElementById("sidebarHandle"),
+      sidebarCollapseBtn: document.getElementById("sidebarCollapseBtn"),
+      sidebarReopenBtn: document.getElementById("sidebarReopenBtn"),
       repoList: document.getElementById("repoList"),
       llmStatus: document.getElementById("llmStatus"),
       workersCount: document.getElementById("workersCount"),
@@ -472,13 +757,68 @@
       setupMeta: document.getElementById("setupMeta"),
       pemStatus: document.getElementById("pemStatus"),
       setupGithubForm: document.getElementById("setupGithubForm"),
+      setupLlmForm: document.getElementById("setupLlmForm"),
       setupPemForm: document.getElementById("setupPemForm"),
       ghOwner: document.getElementById("ghOwner"),
       ghAppId: document.getElementById("ghAppId"),
       ghInstallationId: document.getElementById("ghInstallationId"),
+      btnShowAppId: document.getElementById("btnShowAppId"),
+      btnShowInstallationId: document.getElementById("btnShowInstallationId"),
+      btnClearGithubIds: document.getElementById("btnClearGithubIds"),
+      llmSetupStatus: document.getElementById("llmSetupStatus"),
+      llmProvider: document.getElementById("llmProvider"),
+      llmProviderOrder: document.getElementById("llmProviderOrder"),
+      openaiBaseUrl: document.getElementById("openaiBaseUrl"),
+      openaiApiKey: document.getElementById("openaiApiKey"),
+      openaiApiKeyClear: document.getElementById("openaiApiKeyClear"),
+      localLlmBaseUrl: document.getElementById("localLlmBaseUrl"),
+      localLlmApiMode: document.getElementById("localLlmApiMode"),
+      localLlmProfile: document.getElementById("localLlmProfile"),
+      localLlmModel: document.getElementById("localLlmModel"),
+      localLlmApiKey: document.getElementById("localLlmApiKey"),
+      localLlmApiKeyClear: document.getElementById("localLlmApiKeyClear"),
       projectsMeta: document.getElementById("projectsMeta"),
       projectsList: document.getElementById("projectsList"),
+      workersSettingsMeta: document.getElementById("workersSettingsMeta"),
+      workersSettingsList: document.getElementById("workersSettingsList"),
+      btnOpenNotesEditor: document.getElementById("btnOpenNotesEditor"),
+      sidebarRulesStatus: document.getElementById("sidebarRulesStatus"),
+      rulesMeta: document.getElementById("rulesMeta"),
+      rulesGlobalInput: document.getElementById("rulesGlobalInput"),
+      rulesProjectInput: document.getElementById("rulesProjectInput"),
+      rulesWorkerInput: document.getElementById("rulesWorkerInput"),
+      rulesEffectivePreview: document.getElementById("rulesEffectivePreview"),
+      rulesProjectLabel: document.getElementById("rulesProjectLabel"),
+      rulesWorkerLabel: document.getElementById("rulesWorkerLabel"),
+      btnSaveGlobalRules: document.getElementById("btnSaveGlobalRules"),
+      btnSaveProjectRules: document.getElementById("btnSaveProjectRules"),
+      btnResetProjectRules: document.getElementById("btnResetProjectRules"),
+      btnSaveWorkerRules: document.getElementById("btnSaveWorkerRules"),
+      btnResetWorkerRules: document.getElementById("btnResetWorkerRules"),
     };
+
+    const storage = {
+      get(key, fallback = null) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw === null || raw === undefined) return fallback;
+          return JSON.parse(raw);
+        } catch (e) {
+          return fallback;
+        }
+      },
+      set(key, value) {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+        } catch (e) {
+        }
+      },
+    };
+
+    const SIDEBAR_WIDTH_KEY = "codingai.ui.sidebar.width";
+    const SIDEBAR_HIDDEN_KEY = "codingai.ui.sidebar.hidden";
+    const SECTION_COLLAPSE_KEY = "codingai.ui.sidebar.sections";
+    const SETTINGS_TAB_KEY = "codingai.ui.settings.tab";
 
     async function fetchJson(path, opts = {}) {
       const res = await fetch(path, opts);
@@ -489,6 +829,28 @@
       return res.json();
     }
 
+    function escapeHtml(text) {
+      return String(text || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function statusClass(status) {
+      const s = String(status || "").toLowerCase();
+      if (s.includes("pass")) return "status passed";
+      if (s.includes("fail")) return "status failed";
+      return "status pending";
+    }
+
+    function cssEscape(value) {
+      if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(value);
+      }
+      return String(value || "").replace(/'/g, "\\\\'");
+    }
+
     function showToast(message, isError = false) {
       el.toast.textContent = message;
       el.toast.style.borderColor = isError ? "rgba(239,109,109,0.65)" : "rgba(126,181,178,0.42)";
@@ -497,11 +859,90 @@
       showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
     }
 
-    function statusClass(status) {
-      const s = String(status || "").toLowerCase();
-      if (s.includes("pass")) return "status passed";
-      if (s.includes("fail")) return "status failed";
-      return "status pending";
+    function clampSidebarWidth(px) {
+      const min = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-min")) || 260;
+      const max = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-max")) || 520;
+      return Math.min(max, Math.max(min, Math.round(px)));
+    }
+
+    function setSidebarWidth(px) {
+      const w = clampSidebarWidth(px);
+      document.documentElement.style.setProperty("--sidebar-width", `${w}px`);
+      storage.set(SIDEBAR_WIDTH_KEY, w);
+    }
+
+    function setSidebarHidden(hidden) {
+      document.body.classList.toggle("sidebar-hidden", !!hidden);
+      storage.set(SIDEBAR_HIDDEN_KEY, !!hidden);
+    }
+
+    function setSettingsTab(tabId) {
+      const normalized = String(tabId || "github");
+      document.querySelectorAll(".settings-tab").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.settingsTab === normalized);
+      });
+      document.querySelectorAll(".settings-pane").forEach((pane) => {
+        pane.classList.toggle("active", pane.dataset.settingsPane === normalized);
+      });
+      storage.set(SETTINGS_TAB_KEY, normalized);
+    }
+
+    function initSidebarChrome() {
+      const savedWidth = storage.get(SIDEBAR_WIDTH_KEY, null);
+      if (savedWidth) setSidebarWidth(savedWidth);
+
+      const savedHidden = storage.get(SIDEBAR_HIDDEN_KEY, false);
+      setSidebarHidden(!!savedHidden);
+
+      const sectionState = storage.get(SECTION_COLLAPSE_KEY, { settings: true }) || {};
+      document.querySelectorAll(".collapsible").forEach((section) => {
+        const id = section.dataset.section || "";
+        const collapsed = sectionState[id];
+        section.classList.toggle("collapsed", !!collapsed);
+      });
+
+      document.querySelectorAll(".collapse-toggle").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.collapse;
+          const section = document.querySelector(`.collapsible[data-section='${id}']`);
+          if (!section) return;
+          const next = !section.classList.contains("collapsed");
+          section.classList.toggle("collapsed", next);
+          sectionState[id] = next;
+          storage.set(SECTION_COLLAPSE_KEY, sectionState);
+        });
+      });
+
+      if (el.sidebarCollapseBtn) {
+        el.sidebarCollapseBtn.addEventListener("click", () => setSidebarHidden(true));
+      }
+      if (el.sidebarReopenBtn) {
+        el.sidebarReopenBtn.addEventListener("click", () => setSidebarHidden(false));
+      }
+
+      if (el.sidebarHandle && el.sidebar) {
+        let dragging = false;
+        const onMove = (ev) => {
+          if (!dragging) return;
+          const rect = el.sidebar.getBoundingClientRect();
+          setSidebarWidth(ev.clientX - rect.left);
+        };
+        const onUp = () => {
+          dragging = false;
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+        };
+        el.sidebarHandle.addEventListener("mousedown", (ev) => {
+          if (document.body.classList.contains("sidebar-hidden")) return;
+          dragging = true;
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+          ev.preventDefault();
+        });
+      }
+
+      const savedTab = storage.get(SETTINGS_TAB_KEY, "github");
+      setSettingsTab(savedTab || "github");
     }
 
     function itemByRepo(repo) {
@@ -513,17 +954,17 @@
         const active = item.repo === state.selectedRepo ? "repo active" : "repo";
         const running = item.running ? "chip ok" : "chip";
         return `
-          <article class="${active}" data-repo="${item.repo}">
+          <article class="${active}" data-repo="${escapeHtml(item.repo)}">
             <div class="name">
-              <span>${item.repo}</span>
+              <span>${escapeHtml(item.repo)}</span>
               <span class="${running}">${item.running ? "worker:on" : "worker:off"}</span>
               ${item.automation ? '<span class="chip ok">auto</span>' : '<span class="chip warn">manual</span>'}
             </div>
             <div class="row">
-              <button data-action="select" data-repo="${item.repo}">Select</button>
-              <button data-action="start" data-repo="${item.repo}">Start</button>
-              <button data-action="stop" data-repo="${item.repo}">Stop</button>
-              <button data-action="auto-toggle" data-repo="${item.repo}">${item.automation ? "Disable Auto" : "Enable Auto"}</button>
+              <button data-action="select" data-repo="${escapeHtml(item.repo)}">Select</button>
+              <button data-action="start" data-repo="${escapeHtml(item.repo)}">Start</button>
+              <button data-action="stop" data-repo="${escapeHtml(item.repo)}">Stop</button>
+              <button data-action="auto-toggle" data-repo="${escapeHtml(item.repo)}">${item.automation ? "Disable Auto" : "Enable Auto"}</button>
             </div>
           </article>
         `;
@@ -542,16 +983,55 @@
 
     function renderSetup() {
       const s = state.setup || {};
+      const v = state.setupValues || {};
       const ok = s.setup_complete;
       el.setupStatus.className = ok ? "chip ok" : "chip warn";
       el.setupStatus.textContent = ok ? "READY" : "INCOMPLETE";
-      el.setupMeta.textContent = `owner=${s.has_owner ? "✓" : "×"} app=${s.has_app_id ? "✓" : "×"} install=${s.has_installation_id ? "✓" : "×"} pem=${s.pem_exists ? "✓" : "×"}`;
+      el.setupMeta.textContent = `owner=${s.has_owner ? "Y" : "N"} app=${s.has_app_id ? "Y" : "N"} install=${s.has_installation_id ? "Y" : "N"} pem=${s.pem_exists ? "Y" : "N"}`;
       el.pemStatus.textContent = s.pem_exists ? "PEM present (0600)" : "PEM missing";
+      el.llmSetupStatus.textContent = `provider=${v.llm_provider || "-"} order=${v.llm_provider_order || "-"} profile=${v.local_llm_profile || "-"} openai_key=${v.openai_api_key_set ? "set" : "missing"} local_key=${v.local_llm_api_key_set ? "set" : "missing"}`;
+    }
+
+    function applySetupValues(values) {
+      const v = values || {};
+      if (!el.ghOwner.value && v.owner) el.ghOwner.value = v.owner;
+      if (!el.ghAppId.value && v.app_id) el.ghAppId.value = v.app_id;
+      if (!el.ghInstallationId.value && v.installation_id) el.ghInstallationId.value = v.installation_id;
+      if (v.llm_provider && document.activeElement !== el.llmProvider) el.llmProvider.value = v.llm_provider;
+      if (!el.llmProviderOrder.value && v.llm_provider_order) el.llmProviderOrder.value = v.llm_provider_order;
+      if (!el.openaiBaseUrl.value && v.openai_base_url) el.openaiBaseUrl.value = v.openai_base_url;
+      if (!el.localLlmBaseUrl.value && v.local_llm_base_url) el.localLlmBaseUrl.value = v.local_llm_base_url;
+      if (v.local_llm_api_mode && document.activeElement !== el.localLlmApiMode) el.localLlmApiMode.value = v.local_llm_api_mode;
+      if (v.local_llm_profile && document.activeElement !== el.localLlmProfile) el.localLlmProfile.value = v.local_llm_profile;
+      if (!el.localLlmModel.value && v.local_llm_model) el.localLlmModel.value = v.local_llm_model;
+    }
+
+    function renderWorkersSettings() {
+      const workers = Array.isArray(state.workers) ? state.workers : [];
+      const running = workers.filter((w) => w.running).length;
+      el.workersSettingsMeta.textContent = `workers: ${workers.length} total / ${running} running`;
+      if (!workers.length) {
+        el.workersSettingsList.innerHTML = `<div class="msg">No workers running.</div>`;
+        return;
+      }
+      el.workersSettingsList.innerHTML = workers.map((worker) => {
+        return `
+          <article class="repo">
+            <div class="name">
+              <span>${escapeHtml(worker.repo || "-")}</span>
+              <span class="chip ${worker.running ? "ok" : "warn"}">${worker.running ? "running" : "stopped"}</span>
+            </div>
+            <div class="mono">cycles=${worker.cycles || 0} interval=${worker.poll_interval_seconds || "-"}s</div>
+            <div class="mono">last_error=${escapeHtml(worker.last_error || "-")}</div>
+          </article>
+        `;
+      }).join("");
     }
 
     function renderProjects() {
       const items = state.projects || [];
-      el.projectsMeta.textContent = `${items.length} repos`;
+      const source = state.projectsSource || "unknown";
+      el.projectsMeta.textContent = `${items.length} repos (${source})`;
       if (!items.length) {
         el.projectsList.innerHTML = `<div class="msg">No installation repositories visible. Ensure GitHub App credentials are set and PEM uploaded.</div>`;
         return;
@@ -561,14 +1041,21 @@
           const cls = p.enabled ? "chip ok" : "chip";
           const action = p.enabled ? "disable" : "enable";
           const label = p.enabled ? "Disable" : "Enable";
+          const gate = p.push_gate_mode || "auto_10s";
           return `
             <article class="repo">
               <div class="name">
-                <span>${p.repo}</span>
+                <span>${escapeHtml(p.repo)}</span>
                 <span class="${cls}">${p.enabled ? "enabled" : "disabled"}</span>
+                <span class="chip">${gate === "manual" ? "gate:manual" : "gate:auto_10s"}</span>
               </div>
               <div class="row">
-                <button data-project="${p.repo}" data-action="${action}">${label}</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="${action}">${label}</button>
+                <select data-project-gate="${escapeHtml(p.repo)}">
+                  <option value="auto_10s" ${gate === "auto_10s" ? "selected" : ""}>Auto 10s</option>
+                  <option value="manual" ${gate === "manual" ? "selected" : ""}>Manual</option>
+                </select>
+                <button data-project="${escapeHtml(p.repo)}" data-action="set-gate">Save Gate</button>
               </div>
             </article>
           `;
@@ -583,19 +1070,25 @@
       el.queueError.textContent = q.error ? `queue_error: ${q.error}` : "";
 
       if (!issues.length) {
-        el.queueWrap.innerHTML = `<div class="msg">No open \`ai-fix\` issues in queue.</div>`;
+        el.queueWrap.innerHTML = `<div class="msg">No open ai-fix issues in queue.</div>`;
         return;
       }
 
-      const rows = issues.map((issue) => `
-        <tr>
-          <td>#${issue.number}</td>
-          <td>${issue.title || "(no title)"}</td>
-          <td class="mono">${issue.updated_at || "-"}</td>
-          <td>${(issue.labels || []).join(", ")}</td>
-          <td>${issue.html_url ? `<a href="${issue.html_url}" target="_blank" rel="noreferrer">open</a>` : "-"}</td>
-        </tr>
-      `).join("");
+      const rows = issues.map((issue) => {
+        const safeTitle = escapeHtml(issue.title || "(no title)");
+        const safeUpdated = escapeHtml(issue.updated_at || "-");
+        const safeLabels = escapeHtml((issue.labels || []).join(", "));
+        const safeLink = issue.html_url ? `<a href="${escapeHtml(issue.html_url)}" target="_blank" rel="noreferrer">open</a>` : "-";
+        return `
+          <tr>
+            <td>#${issue.number}</td>
+            <td>${safeTitle}</td>
+            <td class="mono">${safeUpdated}</td>
+            <td>${safeLabels}</td>
+            <td>${safeLink}</td>
+          </tr>
+        `;
+      }).join("");
 
       el.queueWrap.innerHTML = `
         <table>
@@ -624,8 +1117,8 @@
       const mode = policy.dry_run ? "DRY-RUN" : "LIVE";
       const policyEnabled = policy.enabled === false ? "disabled" : "enabled";
       el.policyMeta.textContent = `Policy: ${policyEnabled} mode=${mode}`;
-      const dayBudget = budget.max_per_day > 0 ? `${budget.daily_count}/${budget.max_per_day}` : `${budget.daily_count}/∞`;
-      const weekBudget = budget.max_per_week > 0 ? `${budget.weekly_count}/${budget.max_per_week}` : `${budget.weekly_count}/∞`;
+      const dayBudget = budget.max_per_day > 0 ? `${budget.daily_count}/${budget.max_per_day}` : `${budget.daily_count}/inf`;
+      const weekBudget = budget.max_per_week > 0 ? `${budget.weekly_count}/${budget.max_per_week}` : `${budget.weekly_count}/inf`;
       el.budgetMeta.textContent = `Budget: day=${dayBudget} week=${weekBudget}`;
       el.trackedMeta.textContent = `Tracked issues: ${issues.length}`;
 
@@ -635,38 +1128,38 @@
       }
 
       const cards = issues.map((item) => {
-        const status = item.last_status || "unknown";
+        const status = escapeHtml(item.last_status || "unknown");
         const statusCls = statusClass(status);
         const ciGate = item.ci_gate || {};
         const ciDecision = ciGate.decision || {};
         const pipeline = item.pipeline || {};
-        const stage = pipeline.stage || "n/a";
+        const stage = escapeHtml(pipeline.stage || "n/a");
         const pauseDeadline = pipeline.pause_deadline ? new Date(pipeline.pause_deadline * 1000).toISOString() : "-";
-        const diffPreview = pipeline.diff ? pipeline.diff.slice(0, 400) : "";
-        const testPreview = pipeline.test_output_excerpt ? pipeline.test_output_excerpt.slice(0, 400) : "";
+        const diffPreview = escapeHtml(pipeline.diff ? pipeline.diff.slice(0, 400) : "");
+        const testPreview = escapeHtml(pipeline.test_output_excerpt ? pipeline.test_output_excerpt.slice(0, 400) : "");
         const links = [
-          item.pr_url ? `<a href="${item.pr_url}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
-          item.check_run_url ? `<a href="${item.check_run_url}" target="_blank" rel="noreferrer">check run</a>` : "",
+          item.pr_url ? `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
+          item.check_run_url ? `<a href="${escapeHtml(item.check_run_url)}" target="_blank" rel="noreferrer">check run</a>` : "",
         ].filter(Boolean).join(" | ");
         const retry = item.retry_after ? new Date(item.retry_after * 1000).toISOString() : "-";
         const lastDuration = item.last_duration_ms != null ? `${item.last_duration_ms}ms` : "-";
         const ciText = ciGate.checked_at
-          ? `ci_gate=${ciDecision.reason || ciGate.error || "ok"}`
+          ? `ci_gate=${escapeHtml(ciDecision.reason || ciGate.error || "ok")}`
           : "ci_gate=not_checked";
         const testPatch = `test_patch=${item.test_patch_applied ? "applied" : "no"}(+${item.test_patch_ops_added ?? 0}, conf=${item.test_patch_confidence ?? "-"})`;
         const strategyCfg = `strategy(max=${item.strategy_max_attempts ?? "-"}, q=${item.strategy_quarantine_threshold ?? "-"}/${item.strategy_quarantine_seconds ?? "-"})`;
-        const err = item.last_error ? `<div class="mono">error: ${String(item.last_error).slice(0, 140)}</div>` : "";
+        const err = item.last_error ? `<div class="mono">error: ${escapeHtml(String(item.last_error).slice(0, 140))}</div>` : "";
         return `
           <article class="issue">
             <div class="top">
               <span class="num">Issue #${item.issue_number}</span>
               <span class="${statusCls}">${status}</span>
             </div>
-            <div class="mono">branch: ${item.active_branch || "-"}</div>
+            <div class="mono">branch: ${escapeHtml(item.active_branch || "-")}</div>
             <div class="mono">stage: ${stage}</div>
             <div class="mono">patch_ops=${item.patch_ops_count ?? "-"} patch_conf=${item.patch_confidence ?? "-"}</div>
-            <div class="mono">${testPatch}</div>
-            <div class="mono">${strategyCfg}</div>
+            <div class="mono">${escapeHtml(testPatch)}</div>
+            <div class="mono">${escapeHtml(strategyCfg)}</div>
             <div class="mono">last_duration=${lastDuration} ${ciText}</div>
             <div class="mono">retry_after=${retry}</div>
             <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>
@@ -675,11 +1168,11 @@
               <button data-action="pause" data-issue="${item.issue_number}">Pause</button>
               <button data-action="resume" data-issue="${item.issue_number}">Resume</button>
               <button data-action="cancel" data-issue="${item.issue_number}">Cancel</button>
-              <span class="chip mono">pause until: ${pauseDeadline}</span>
+              <span class="chip mono">pause until: ${escapeHtml(pauseDeadline)}</span>
             </div>
-            <pre class="mono" data-diff="${item.issue_number}">${diffPreview || "diff not recorded"}</pre>
-            <pre class="mono" data-log="${item.issue_number}">${testPreview || "no test output captured"}</pre>
-            ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${item.ai_stop_reason || "reason n/a"})</div>` : ""}
+            <pre data-diff="${item.issue_number}">${diffPreview || "diff not recorded"}</pre>
+            <pre data-log="${item.issue_number}">${testPreview || "no test output captured"}</pre>
+            ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${escapeHtml(item.ai_stop_reason || "reason n/a")})</div>` : ""}
             ${item.pending_manual_approval ? `<div class="chip warn">pending manual approval</div>` : ""}
             ${err}
           </article>
@@ -688,28 +1181,116 @@
       el.trackedWrap.innerHTML = `<div class="issues">${cards}</div>`;
     }
 
+    function normalizeRuleResponse(payload) {
+      if (!payload || typeof payload !== "object") return { exists: false, rules_markdown: "", updated_at_utc: "" };
+      const rules = payload.rules && typeof payload.rules === "object" ? payload.rules : payload;
+      return {
+        exists: !!rules.exists,
+        rules_markdown: String(rules.rules_markdown || ""),
+        updated_at_utc: String(rules.updated_at_utc || ""),
+        scope: String(rules.scope || ""),
+        repo: rules.repo || null,
+      };
+    }
+
+    function setTextIfUnfocused(textarea, text) {
+      if (!textarea) return;
+      if (document.activeElement === textarea) return;
+      textarea.value = text || "";
+    }
+
+    function renderRules() {
+      const repo = state.selectedRepo || "";
+      const globalRules = state.rules.global || { rules_markdown: "" };
+      const projectRules = state.rules.project || { rules_markdown: "" };
+      const workerRules = state.rules.worker || { rules_markdown: "" };
+      const effective = state.rules.effective || { text: "", sources: [] };
+
+      setTextIfUnfocused(el.rulesGlobalInput, globalRules.rules_markdown || "");
+
+      if (!repo) {
+        el.rulesProjectLabel.textContent = "Project Rules (select a project)";
+        el.rulesWorkerLabel.textContent = "Worker Rules (select a project)";
+        el.rulesProjectInput.value = "";
+        el.rulesWorkerInput.value = "";
+        el.rulesProjectInput.disabled = true;
+        el.rulesWorkerInput.disabled = true;
+        el.btnSaveProjectRules.disabled = true;
+        el.btnResetProjectRules.disabled = true;
+        el.btnSaveWorkerRules.disabled = true;
+        el.btnResetWorkerRules.disabled = true;
+        el.rulesEffectivePreview.textContent = String(globalRules.rules_markdown || "No rules loaded.");
+        el.rulesMeta.textContent = "Select a project to edit project/worker rules.";
+        el.sidebarRulesStatus.textContent = `global:${globalRules.rules_markdown ? "set" : "-"} project:- worker:-`;
+        return;
+      }
+
+      el.rulesProjectLabel.textContent = `Project Rules (${repo})`;
+      el.rulesWorkerLabel.textContent = `Worker Rules (${repo})`;
+      setTextIfUnfocused(el.rulesProjectInput, projectRules.rules_markdown || "");
+      setTextIfUnfocused(el.rulesWorkerInput, workerRules.rules_markdown || "");
+      el.rulesProjectInput.disabled = false;
+      el.rulesWorkerInput.disabled = false;
+      el.btnSaveProjectRules.disabled = false;
+      el.btnResetProjectRules.disabled = false;
+      el.btnSaveWorkerRules.disabled = false;
+      el.btnResetWorkerRules.disabled = false;
+
+      const effectiveText = String(effective.text || "").trim();
+      el.rulesEffectivePreview.textContent = effectiveText || "No effective rules. Global/project/worker files are empty.";
+
+      const globalSet = !!String(globalRules.rules_markdown || "").trim();
+      const projectSet = !!String(projectRules.rules_markdown || "").trim();
+      const workerSet = !!String(workerRules.rules_markdown || "").trim();
+      el.sidebarRulesStatus.textContent = `global:${globalSet ? "set" : "-"} project:${projectSet ? "set" : "-"} worker:${workerSet ? "set" : "-"}`;
+
+      const activeSources = Array.isArray(effective.sources)
+        ? effective.sources.filter((source) => String(source.rules_markdown || "").trim()).length
+        : 0;
+      el.rulesMeta.textContent = `Repo=${repo} active rule layers=${activeSources}`;
+    }
+
     async function refreshCore() {
       const [health, repos] = await Promise.all([fetchJson("/health"), fetchJson("/repos")]);
       state.health = health;
       state.repos = repos;
+      if (state.selectedRepo && !repos.find((repo) => repo.repo === state.selectedRepo)) {
+        state.selectedRepo = repos.length ? repos[0].repo : null;
+      }
       if (!state.selectedRepo && repos.length) state.selectedRepo = repos[0].repo;
       renderHeader();
       renderRepos();
     }
 
     async function refreshSetup() {
-      state.setup = await fetchJson("/setup/status");
+      const [status, values] = await Promise.all([fetchJson("/setup/status"), fetchJson("/setup/values")]);
+      state.setup = status;
+      state.setupValues = values;
+      applySetupValues(values);
       renderSetup();
+    }
+
+    async function refreshWorkers() {
+      const data = await fetchJson("/workers");
+      state.workers = Array.isArray(data.workers) ? data.workers : [];
+      renderWorkersSettings();
     }
 
     async function refreshProjects() {
       const data = await fetchJson("/projects");
       state.projects = data.projects || [];
+      state.projectsSource = data.source || "unknown";
+      if (data.error) {
+        showToast(`projects fallback: ${data.error}`, true);
+      }
       renderProjects();
     }
 
     async function refreshSummary() {
-      if (!state.selectedRepo) return;
+      if (!state.selectedRepo) {
+        el.selectedRepoTitle.textContent = "Repository";
+        return;
+      }
       el.selectedRepoTitle.textContent = `Repository: ${state.selectedRepo}`;
       const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
       state.summary = summary;
@@ -717,12 +1298,39 @@
       renderTracked(summary);
     }
 
+    async function refreshRules() {
+      const globalData = await fetchJson("/rules/global");
+      state.rules.global = normalizeRuleResponse(globalData);
+
+      if (!state.selectedRepo) {
+        state.rules.project = null;
+        state.rules.worker = null;
+        state.rules.effective = { text: state.rules.global.rules_markdown || "", sources: [state.rules.global] };
+        renderRules();
+        return;
+      }
+
+      const repo = state.selectedRepo;
+      const [projectData, workerData, effectiveData] = await Promise.all([
+        fetchJson(`/rules/projects/${encodeURIComponent(repo)}`),
+        fetchJson(`/rules/workers/${encodeURIComponent(repo)}`),
+        fetchJson(`/rules/effective?repo=${encodeURIComponent(repo)}`),
+      ]);
+
+      state.rules.project = normalizeRuleResponse(projectData);
+      state.rules.worker = normalizeRuleResponse(workerData);
+      state.rules.effective = {
+        text: String(effectiveData.text || ""),
+        sources: Array.isArray(effectiveData.sources) ? effectiveData.sources : [],
+      };
+      renderRules();
+    }
+
     async function refreshAll() {
       try {
         await refreshCore();
         await refreshSummary();
-        await refreshProjects();
-        await refreshSetup();
+        await Promise.all([refreshProjects(), refreshSetup(), refreshWorkers(), refreshRules()]);
       } catch (e) {
         showToast(`refresh failed: ${e.message}`, true);
       }
@@ -736,6 +1344,29 @@
       } catch (e) {
         showToast(`action failed: ${e.message}`, true);
       }
+    }
+
+    function toggleSecretInput(input, button) {
+      const isPassword = input.type === "password";
+      input.type = isPassword ? "text" : "password";
+      button.textContent = isPassword ? "Hide" : "Show";
+    }
+
+    document.querySelectorAll(".settings-tab").forEach((btn) => {
+      btn.addEventListener("click", () => setSettingsTab(btn.dataset.settingsTab || "github"));
+    });
+
+    if (el.btnShowAppId) {
+      el.btnShowAppId.addEventListener("click", () => toggleSecretInput(el.ghAppId, el.btnShowAppId));
+    }
+    if (el.btnShowInstallationId) {
+      el.btnShowInstallationId.addEventListener("click", () => toggleSecretInput(el.ghInstallationId, el.btnShowInstallationId));
+    }
+
+    if (el.btnOpenNotesEditor) {
+      el.btnOpenNotesEditor.addEventListener("click", () => {
+        document.getElementById("notesEditor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     }
 
     el.repoList.addEventListener("click", async (ev) => {
@@ -802,12 +1433,29 @@
       try {
         const fd = new FormData(ev.target);
         await fetchJson("/setup/github", { method: "POST", body: fd });
-        showToast("GitHub IDs saved");
-        await refreshSetup();
+        showToast("GitHub IDs updated");
+        await Promise.all([refreshSetup(), refreshProjects(), refreshCore()]);
       } catch (e) {
         showToast(`setup save failed: ${e.message}`, true);
       }
     });
+
+    if (el.btnClearGithubIds) {
+      el.btnClearGithubIds.addEventListener("click", async () => {
+        const ok = window.confirm("Clear GitHub owner, app ID, and installation ID?");
+        if (!ok) return;
+        try {
+          await fetchJson("/setup/github/clear", { method: "POST" });
+          el.ghOwner.value = "";
+          el.ghAppId.value = "";
+          el.ghInstallationId.value = "";
+          showToast("GitHub IDs cleared");
+          await Promise.all([refreshSetup(), refreshProjects(), refreshCore(), refreshWorkers()]);
+        } catch (e) {
+          showToast(`clear failed: ${e.message}`, true);
+        }
+      });
+    }
 
     el.setupPemForm.addEventListener("submit", async (ev) => {
       ev.preventDefault();
@@ -822,6 +1470,22 @@
       }
     });
 
+    el.setupLlmForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        const fd = new FormData(ev.target);
+        await fetchJson("/setup/llm", { method: "POST", body: fd });
+        showToast("LLM settings saved");
+        el.openaiApiKey.value = "";
+        el.localLlmApiKey.value = "";
+        el.openaiApiKeyClear.checked = false;
+        el.localLlmApiKeyClear.checked = false;
+        await refreshSetup();
+      } catch (e) {
+        showToast(`llm setup save failed: ${e.message}`, true);
+      }
+    });
+
     el.projectsList.addEventListener("click", async (ev) => {
       const btn = ev.target.closest("button");
       if (!btn) return;
@@ -829,18 +1493,93 @@
       const action = btn.dataset.action;
       if (!repo || !action) return;
       try {
-        await fetchJson(`/projects/${encodeURIComponent(repo)}/${action}`, { method: "POST" });
-        showToast(`project ${action}d: ${repo}`);
-        await refreshProjects();
+        if (action === "set-gate") {
+          const sel = document.querySelector(`select[data-project-gate='${cssEscape(repo)}']`);
+          const mode = sel?.value || "auto_10s";
+          await fetchJson(`/projects/${encodeURIComponent(repo)}/push-gate?mode=${encodeURIComponent(mode)}`, { method: "POST" });
+          showToast(`project gate set: ${repo} -> ${mode}`);
+        } else {
+          await fetchJson(`/projects/${encodeURIComponent(repo)}/${action}`, { method: "POST" });
+          showToast(`project ${action}d: ${repo}`);
+        }
+        await Promise.all([refreshProjects(), refreshCore(), refreshRules()]);
       } catch (e) {
-        showToast(`project toggle failed: ${e.message}`, true);
+        showToast(`project update failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnSaveGlobalRules.addEventListener("click", async () => {
+      try {
+        await fetchJson("/rules/global", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rules_markdown: el.rulesGlobalInput.value || "" }),
+        });
+        showToast("Global rules saved");
+        await refreshRules();
+      } catch (e) {
+        showToast(`save failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnSaveProjectRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/projects/${encodeURIComponent(state.selectedRepo)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rules_markdown: el.rulesProjectInput.value || "" }),
+        });
+        showToast("Project rules saved");
+        await refreshRules();
+      } catch (e) {
+        showToast(`save failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnResetProjectRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/projects/${encodeURIComponent(state.selectedRepo)}`, { method: "DELETE" });
+        showToast("Project rules reset to global");
+        await refreshRules();
+      } catch (e) {
+        showToast(`reset failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnSaveWorkerRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/workers/${encodeURIComponent(state.selectedRepo)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rules_markdown: el.rulesWorkerInput.value || "" }),
+        });
+        showToast("Worker rules saved");
+        await refreshRules();
+      } catch (e) {
+        showToast(`save failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnResetWorkerRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/workers/${encodeURIComponent(state.selectedRepo)}`, { method: "DELETE" });
+        showToast("Worker rules reset to project");
+        await refreshRules();
+      } catch (e) {
+        showToast(`reset failed: ${e.message}`, true);
       }
     });
 
     async function boot() {
+      initSidebarChrome();
       await refreshAll();
       state.refreshTimer = setInterval(refreshAll, 7000);
     }
+
     boot();
   </script>
 </body>

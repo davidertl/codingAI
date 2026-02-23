@@ -1,7 +1,6 @@
 import requests
 from github.app_auth import get_installation_token
-
-OWNER = "davidertl"
+from github.config import get_github_owner
 
 
 def _headers():
@@ -23,7 +22,10 @@ def _without_pull_requests(items):
 
 
 def get_ai_issues(repo):
-    url = f"https://api.github.com/repos/{OWNER}/{repo}/issues"
+    owner = get_github_owner()
+    if not owner:
+        raise RuntimeError("GITHUB_OWNER is not configured")
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues"
     params = {"state": "open", "labels": "ai-fix", "per_page": 100}
 
     r = requests.get(url, headers=_headers(), params=params)
@@ -33,7 +35,10 @@ def get_ai_issues(repo):
 
 
 def create_issue(repo, title, body):
-    url = f"https://api.github.com/repos/{OWNER}/{repo}/issues"
+    owner = get_github_owner()
+    if not owner:
+        raise RuntimeError("GITHUB_OWNER is not configured")
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues"
     data = {"title": title, "body": body}
 
     r = requests.post(url, headers=_headers(), json=data)

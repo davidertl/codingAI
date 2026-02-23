@@ -1,18 +1,18 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: 1.3.7
+Version: experimental-0.21.0
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
-- Agent can open GitHub issues in `davidertl/codingAI` for missing features/bugs.
+- Agent can open GitHub issues in `your-org/codingAI` for missing features/bugs.
 - Scheduled self-checks: dependency drift, disk space, workspace cleanup.
 
-Status: Partially implemented (automation toggle + auto-start workers + self-check disk/cleanup; issue creation for missing features not yet wired).
+Status: Partially implemented (automation toggle + auto-start workers + self-check disk/cleanup; issue creation for missing features not yet wired, tracked in `docs/implementation-plan.md`).
 
 ## Phase 20 – Secrets & Safety (Local)
 - PEM/API key upload rules: size/type validation, overwrite policy, fingerprint stored, audit entry; never echo secret content.
 - Redaction for logs/metrics; lightweight prompt-safety filter even in local mode.
 
-Status: Partially implemented (events API redacts common secret keys, long strings truncated; PEM upload already validated).
+Status: Partially implemented (events API redaction, PEM validation + overwrite policy + fingerprint + audit event; prompt-safety filter remains open, tracked in `docs/implementation-plan.md`).
 
 ## Phase 19 – Memory & Reuse
 - Strategy memory/quarantine persisted (to move to SQLite); error fingerprints map to successful strategy chains.
@@ -49,9 +49,9 @@ Status: Implemented (pipeline stages persisted, pause/pause controls via `/pipel
 - Persist projects: push gate mode (10s auto vs manual approve), labels to watch, policy reference.
 
 Pre-Phase 15 checklist (new)
-- Harden setup/projects UX: preload saved owner/app/installation IDs in UI once env read API is added.
-- Persist projects to durable DB (SQLite) instead of `state.json`; include labels/policy template per repo.
-- Add “push gate mode” selector in UI and map to policy file override.
+- Harden setup/projects UX: preload saved owner/app/installation IDs in UI once env read API is added. (Implemented)
+- Persist projects to durable DB (SQLite) instead of `state.json`; include labels/policy template per repo. (Planned in `docs/implementation-plan.md`)
+- Add “push gate mode” selector in UI and map to policy file override. (Planned in `docs/implementation-plan.md`)
 
 ## Phase 13 – Setup & Installer (Local)
 - Docker Compose stack: api/ui, optional searxng, sqlite volume, secrets volume, workspaces.

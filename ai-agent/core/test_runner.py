@@ -1,7 +1,13 @@
 import hashlib
+import json
 import os
+import shutil
+import socket
 import subprocess
+import sys
 import time
+import urllib.error
+import urllib.request
 
 from llm.strategy_llm import pick_next_strategy
 
@@ -9,10 +15,160 @@ _TRUTHY = {"1", "true", "yes", "on"}
 DOCKER_COMPOSE_EPHEMERAL_UP_ENABLED = (
     os.getenv("DOCKER_COMPOSE_EPHEMERAL_UP_ENABLED", "true").strip().lower() in _TRUTHY
 )
+WEB_SERVER_SCRIPT_CANDIDATES = ("dev", "start", "serve", "preview")
+WEB_TEST_SCRIPT_CANDIDATES = ("test:e2e", "e2e", "test:playwright", "playwright", "test:ui")
+WEB_FRAMEWORK_DEP_HINTS = (
+    "next",
+    "nuxt",
+    "react",
+    "react-dom",
+    "vite",
+    "@vitejs/plugin-react",
+    "astro",
+    "svelte",
+    "vue",
+    "@angular/core",
+)
+PLAYWRIGHT_CONFIG_NAMES = (
+    "playwright.config.ts",
+    "playwright.config.js",
+    "playwright.config.mjs",
+    "playwright.config.cjs",
+)
+SEMGREP_DOCKER_IMAGE = os.getenv("SEMGREP_DOCKER_IMAGE", "returntocorp/semgrep:latest").strip()
+TRIVY_DOCKER_IMAGE = os.getenv("TRIVY_DOCKER_IMAGE", "aquasec/trivy:latest").strip()
+SONAR_SCANNER_DOCKER_IMAGE = os.getenv("SONAR_SCANNER_DOCKER_IMAGE", "sonarsource/sonar-scanner-cli:latest").strip()
 
 
-def _run(cmd, *, cwd=None):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def _run(cmd, *, cwd=None, env=None):
+    try:
+        return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+    except FileNotFoundError as e:
+        executable = ""
+        if isinstance(cmd, (list, tuple)) and cmd:
+            executable = str(cmd[0])
+        elif isinstance(cmd, str):
+            executable = cmd.split()[0] if cmd.strip() else ""
+        missing = executable or "command"
+        return subprocess.CompletedProcess(
+            cmd,
+            127,
+            stdout="",
+            stderr=f"{missing} not found: {e}",
+        )
+
+
+def _command_exists(name: str) -> bool:
+    return bool(shutil.which(name))
+
+
+def _docker_available() -> bool:
+    return _run(["docker", "version"]).returncode == 0
+
+
+def _run_and_combine(cmd, *, cwd=None, env=None):
+    res = _run(cmd, cwd=cwd, env=env)
+    out = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+    return res.returncode == 0, out
+
+
+def _compose_base_cmd() -> list[str]:
+    """
+    Prefer Docker Compose plugin, fallback to standalone docker-compose binary.
+    """
+    if _run(["docker", "compose", "version"]).returncode == 0:
+        return ["docker", "compose"]
+    if _run(["docker-compose", "version"]).returncode == 0:
+        return ["docker-compose"]
+    # Keep default behavior to surface a clear runtime error.
+    return ["docker", "compose"]
+
+
+def _load_package_json(pkg_path: str) -> dict | None:
+    try:
+        with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _package_dep_names(package_json: dict) -> set[str]:
+    deps = package_json.get("dependencies", {}) if isinstance(package_json, dict) else {}
+    dev_deps = package_json.get("devDependencies", {}) if isinstance(package_json, dict) else {}
+
+    names = set()
+    if isinstance(deps, dict):
+        names.update(str(k).strip() for k in deps.keys() if str(k).strip())
+    if isinstance(dev_deps, dict):
+        names.update(str(k).strip() for k in dev_deps.keys() if str(k).strip())
+    return names
+
+
+def _web_detection_score(package_json: dict, project_dir: str) -> int:
+    scripts = package_json.get("scripts", {}) if isinstance(package_json, dict) else {}
+    dep_names = _package_dep_names(package_json)
+
+    score = 0
+    if isinstance(scripts, dict):
+        script_names = {str(k).strip() for k in scripts.keys() if str(k).strip()}
+        if script_names.intersection(WEB_SERVER_SCRIPT_CANDIDATES):
+            score += 3
+        if script_names.intersection(WEB_TEST_SCRIPT_CANDIDATES):
+            score += 2
+        if "build" in script_names:
+            score += 1
+
+    if dep_names.intersection(WEB_FRAMEWORK_DEP_HINTS):
+        score += 2
+    if "@playwright/test" in dep_names or "playwright" in dep_names:
+        score += 2
+    if any(os.path.exists(os.path.join(project_dir, n)) for n in PLAYWRIGHT_CONFIG_NAMES):
+        score += 2
+    if os.path.exists(os.path.join(project_dir, "index.html")):
+        score += 1
+    return score
+
+
+def _pick_script(scripts: dict, candidates: tuple[str, ...]) -> str | None:
+    if not isinstance(scripts, dict):
+        return None
+    for name in candidates:
+        val = scripts.get(name)
+        if isinstance(val, str) and val.strip():
+            return name
+    return None
+
+
+def _pick_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _tail_text_file(path: str, max_chars: int = 5000) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        return content[-max_chars:]
+    except Exception:
+        return ""
+
+
+def _terminate_process(proc: subprocess.Popen | None) -> None:
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def _fingerprint(s: str) -> str:
@@ -214,6 +370,8 @@ def analyze_repo(repo_path: str) -> dict:
         "has_dockerfile_root": os.path.exists(os.path.join(repo_path, "Dockerfile")),
         "dotnet_projects": [],
         "node_projects": [],
+        "web_node_projects": [],
+        "has_python_files": False,
     }
 
     for root, _, files in os.walk(repo_path):
@@ -227,11 +385,18 @@ def analyze_repo(repo_path: str) -> dict:
             if f.endswith(".csproj") or f.endswith(".sln"):
                 summary["dotnet_projects"].append(os.path.join(root, f))
             elif f == "package.json":
-                summary["node_projects"].append(os.path.join(root, f))
+                pkg_path = os.path.join(root, f)
+                summary["node_projects"].append(pkg_path)
+                pkg = _load_package_json(pkg_path)
+                if pkg and _web_detection_score(pkg, root) > 0:
+                    summary["web_node_projects"].append(pkg_path)
+            elif f.endswith(".py"):
+                summary["has_python_files"] = True
 
     # cap sizes
     summary["dotnet_projects"] = summary["dotnet_projects"][:20]
     summary["node_projects"] = summary["node_projects"][:20]
+    summary["web_node_projects"] = summary["web_node_projects"][:20]
     return summary
 
 
@@ -267,18 +432,41 @@ def find_first_package_json(repo_analysis: dict) -> str | None:
     return None
 
 
+def find_first_web_package(repo_analysis: dict) -> str | None:
+    web_candidates = repo_analysis.get("web_node_projects", [])
+    if web_candidates:
+        return web_candidates[0]
+
+    best_score = -1
+    best_path = None
+    for p in repo_analysis.get("node_projects", []):
+        if not p.endswith("package.json"):
+            continue
+        pkg = _load_package_json(p)
+        if not pkg:
+            continue
+        score = _web_detection_score(pkg, os.path.dirname(p))
+        if score > best_score:
+            best_score = score
+            best_path = p
+
+    if best_score <= 0:
+        return None
+    return best_path
+
+
 # ----------------------------
 # Strategies
 # ----------------------------
 
 def strat_docker_compose_build(repo_path: str):
-    res = _run(["docker", "compose", "build"], cwd=repo_path)
+    res = _run(_compose_base_cmd() + ["build"], cwd=repo_path)
     out = (res.stdout or "") + "\n" + (res.stderr or "")
     return res.returncode == 0, out.strip()
 
 
 def _compose_first_service(repo_path: str) -> str | None:
-    res = _run(["docker", "compose", "config", "--services"], cwd=repo_path)
+    res = _run(_compose_base_cmd() + ["config", "--services"], cwd=repo_path)
     if res.returncode != 0:
         return None
     for line in (res.stdout or "").splitlines():
@@ -301,12 +489,13 @@ def strat_docker_compose_ephemeral_up(repo_path: str):
         return False, "Could not resolve docker compose service list for ephemeral run."
 
     project_name = _compose_project_name(repo_path)
-    up_cmd = [
-        "docker", "compose", "-p", project_name,
+    compose_base = _compose_base_cmd()
+    up_cmd = compose_base + [
+        "-p", project_name,
         "up", "--build", "--abort-on-container-exit", "--exit-code-from", service,
     ]
-    down_cmd = [
-        "docker", "compose", "-p", project_name,
+    down_cmd = compose_base + [
+        "-p", project_name,
         "down", "-v", "--remove-orphans",
     ]
 
@@ -401,6 +590,925 @@ def strat_node_build_docker(repo_path: str, repo_analysis: dict):
     return res.returncode == 0, out.strip()
 
 
+def strat_semgrep_scan(repo_path: str):
+    config = os.getenv("SEMGREP_CONFIG", "auto").strip() or "auto"
+    if _command_exists("semgrep"):
+        return _run_and_combine(
+            [
+                "semgrep",
+                "scan",
+                "--config",
+                config,
+                "--json",
+                "--metrics=off",
+                "--error",
+                ".",
+            ],
+            cwd=repo_path,
+        )
+
+    if _docker_available():
+        image = SEMGREP_DOCKER_IMAGE or "returntocorp/semgrep:latest"
+        return _run_and_combine(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{repo_path}:/src",
+                "-w",
+                "/src",
+                image,
+                "semgrep",
+                "scan",
+                "--config",
+                config,
+                "--json",
+                "--metrics=off",
+                "--error",
+                ".",
+            ]
+        )
+
+    return False, "Semgrep not available (missing local semgrep binary and docker fallback)."
+
+
+def strat_bandit_scan(repo_path: str, repo_analysis: dict):
+    if not repo_analysis.get("has_python_files"):
+        return False, "No Python files found for bandit strategy."
+
+    if _command_exists("bandit"):
+        return _run_and_combine(["bandit", "-r", ".", "-f", "txt", "-q"], cwd=repo_path)
+
+    if _docker_available():
+        return _run_and_combine(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{repo_path}:/src",
+                "-w",
+                "/src",
+                "python:3.11-slim",
+                "bash",
+                "-lc",
+                "pip install --disable-pip-version-check --no-cache-dir bandit >/tmp/bandit-install.log 2>&1 && "
+                "bandit -r . -f txt -q",
+            ]
+        )
+
+    return False, "Bandit not available (missing local bandit binary and docker fallback)."
+
+
+def strat_trivy_scan(repo_path: str):
+    severity = os.getenv("TRIVY_SEVERITY", "HIGH,CRITICAL").strip() or "HIGH,CRITICAL"
+    scanners = os.getenv("TRIVY_SCANNERS", "vuln,misconfig,secret").strip() or "vuln,misconfig,secret"
+    timeout = os.getenv("TRIVY_TIMEOUT", "5m").strip() or "5m"
+
+    trivy_args = [
+        "fs",
+        "--scanners",
+        scanners,
+        "--severity",
+        severity,
+        "--exit-code",
+        "1",
+        "--no-progress",
+        "--timeout",
+        timeout,
+    ]
+    if os.getenv("TRIVY_IGNORE_UNFIXED", "true").strip().lower() in _TRUTHY:
+        trivy_args.append("--ignore-unfixed")
+
+    if _command_exists("trivy"):
+        return _run_and_combine(["trivy"] + trivy_args + ["."], cwd=repo_path)
+
+    if _docker_available():
+        image = TRIVY_DOCKER_IMAGE or "aquasec/trivy:latest"
+        return _run_and_combine(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{repo_path}:/src",
+                "-w",
+                "/src",
+                image,
+                "trivy",
+            ]
+            + trivy_args
+            + ["/src"]
+        )
+
+    return False, "Trivy not available (missing local trivy binary and docker fallback)."
+
+
+def _normalize_sonar_project_key(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "._:-" else "-" for ch in str(value or "").strip())
+    safe = safe.strip("-._:")
+    if not safe:
+        safe = "codingai"
+    return safe[:120]
+
+
+def strat_sonarqube_scan(repo_path: str, repo_name: str):
+    host = os.getenv("SONAR_HOST_URL", "").strip()
+    token = os.getenv("SONAR_TOKEN", "").strip()
+    project_key = _normalize_sonar_project_key(
+        os.getenv("SONAR_PROJECT_KEY", "").strip() or repo_name or os.path.basename(repo_path)
+    )
+    quality_gate_wait = os.getenv("SONAR_QUALITY_GATE_WAIT", "false").strip().lower() in _TRUTHY
+
+    if not host or not token:
+        return False, "SonarQube strategy requires SONAR_HOST_URL and SONAR_TOKEN."
+
+    scanner_args = [
+        f"-Dsonar.host.url={host}",
+        f"-Dsonar.token={token}",
+        f"-Dsonar.projectKey={project_key}",
+        "-Dsonar.projectBaseDir=.",
+        "-Dsonar.sources=.",
+    ]
+    if quality_gate_wait:
+        scanner_args.append("-Dsonar.qualitygate.wait=true")
+
+    if _command_exists("sonar-scanner"):
+        return _run_and_combine(["sonar-scanner"] + scanner_args, cwd=repo_path)
+
+    if _docker_available():
+        image = SONAR_SCANNER_DOCKER_IMAGE or "sonarsource/sonar-scanner-cli:latest"
+        env = os.environ.copy()
+        env["SONAR_HOST_URL"] = host
+        env["SONAR_TOKEN"] = token
+        return _run_and_combine(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{repo_path}:/usr/src",
+                "-w",
+                "/usr/src",
+                "-e",
+                f"SONAR_HOST_URL={host}",
+                "-e",
+                f"SONAR_TOKEN={token}",
+                image,
+                "sonar-scanner",
+            ]
+            + scanner_args,
+            env=env,
+        )
+
+    return False, "SonarQube scanner not available (missing sonar-scanner binary and docker fallback)."
+
+
+def _wait_for_http(url: str, timeout_seconds: int, *, proc: subprocess.Popen | None = None):
+    deadline = time.time() + max(1, int(timeout_seconds))
+    last_error = ""
+
+    while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False, f"Server exited early with code {proc.returncode}."
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                status = int(getattr(resp, "status", 200))
+                if status < 500:
+                    return True, f"HTTP {status}"
+                last_error = f"HTTP {status}"
+        except urllib.error.URLError as e:
+            last_error = str(e.reason)
+        except Exception as e:
+            last_error = str(e)
+        time.sleep(1)
+
+    return False, f"Timed out waiting for {url}. last_error={last_error}"
+
+
+def _http_get_json(url: str, timeout: int = 15):
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    return json.loads(raw)
+
+
+def _dashboard_repo_value(repos, repo_name: str, field: str):
+    for repo in repos:
+        if isinstance(repo, dict) and repo.get("repo") == repo_name:
+            return repo.get(field)
+    return None
+
+
+def _playwright_dashboard_checks(page, base_url: str):
+    lines = ["--- codingai_dashboard_checks ---"]
+    ok = True
+
+    target_repo = ""
+    setup_values_before = {}
+    should_restore_github = False
+    original_global_rules = ""
+    original_project_rules = ""
+    original_project_exists = False
+
+    try:
+        repos_before = _http_get_json(f"{base_url.rstrip('/')}/repos")
+        if not isinstance(repos_before, list) or not repos_before:
+            return False, ["dashboard_check_error=no repos found from /repos"]
+        target_repo = str(repos_before[0].get("repo") or "")
+        if not target_repo:
+            return False, ["dashboard_check_error=empty target repo from /repos"]
+        lines.append(f"target_repo={target_repo}")
+
+        setup_values_before = _http_get_json(f"{base_url.rstrip('/')}/setup/values")
+        owner_before = str(setup_values_before.get("owner") or "")
+        app_id_before = str(setup_values_before.get("app_id") or "")
+        install_id_before = str(setup_values_before.get("installation_id") or "")
+        should_restore_github = bool(owner_before and app_id_before and install_id_before)
+
+        # Expand settings section if collapsed.
+        settings_section = page.locator(".collapsible[data-section='settings']").first
+        settings_collapsed = settings_section.evaluate("node => node.classList.contains('collapsed')")
+        if settings_collapsed:
+            settings_section.locator(".collapse-toggle").first.click(timeout=5000)
+            page.wait_for_timeout(500)
+
+        # Sidebar hide/reopen behavior.
+        page.locator("#sidebarCollapseBtn").first.click(timeout=5000)
+        page.wait_for_timeout(500)
+        hidden_after_collapse = page.evaluate("document.body.classList.contains('sidebar-hidden')")
+        lines.append(f"sidebar_hidden_after_toggle={hidden_after_collapse}")
+        if not hidden_after_collapse:
+            ok = False
+
+        reopen_visible = page.locator("#sidebarReopenBtn").first.is_visible()
+        lines.append(f"sidebar_reopen_visible={reopen_visible}")
+        if not reopen_visible:
+            ok = False
+
+        page.locator("#sidebarReopenBtn").first.click(timeout=5000)
+        page.wait_for_timeout(500)
+        hidden_after_reopen = page.evaluate("document.body.classList.contains('sidebar-hidden')")
+        lines.append(f"sidebar_hidden_after_reopen={hidden_after_reopen}")
+        if hidden_after_reopen:
+            ok = False
+
+        # Drag-to-resize behavior.
+        width_before = int(
+            page.evaluate(
+                "parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width')) || 0"
+            )
+        )
+        handle_box = page.locator("#sidebarHandle").first.bounding_box()
+        width_after = width_before
+        if handle_box:
+            start_x = int(handle_box["x"] + (handle_box["width"] / 2.0))
+            start_y = int(handle_box["y"] + 40)
+            for delta in (140, -120, 200):
+                page.mouse.move(start_x, start_y)
+                page.mouse.down()
+                page.mouse.move(int(start_x + delta), start_y, steps=12)
+                page.mouse.up()
+                page.wait_for_timeout(250)
+                width_after = int(
+                    page.evaluate(
+                        "parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width')) || 0"
+                    )
+                )
+                if width_after != width_before:
+                    break
+        else:
+            lines.append("sidebar_resize_handle_missing=true")
+        lines.append(f"sidebar_width_before={width_before}")
+        lines.append(f"sidebar_width_after={width_after}")
+        if width_before == width_after:
+            width_after = int(
+                page.evaluate(
+                    """
+                    (() => {
+                      const handle = document.getElementById('sidebarHandle');
+                      const sidebar = document.getElementById('sidebar');
+                      if (!handle || !sidebar) {
+                        return parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width')) || 0;
+                      }
+                      const rect = sidebar.getBoundingClientRect();
+                      const startX = Math.round(rect.left + rect.width - 2);
+                      const startY = Math.round(rect.top + 40);
+                      handle.dispatchEvent(new MouseEvent('mousedown', { clientX: startX, clientY: startY, bubbles: true }));
+                      document.dispatchEvent(new MouseEvent('mousemove', { clientX: startX + 160, clientY: startY, bubbles: true }));
+                      document.dispatchEvent(new MouseEvent('mouseup', { clientX: startX + 160, clientY: startY, bubbles: true }));
+                      return parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width')) || 0;
+                    })()
+                    """
+                )
+            )
+            lines.append("sidebar_resize_dispatch_fallback_used=true")
+            lines.append(f"sidebar_width_after_dispatch={width_after}")
+        if width_before == width_after:
+            ok = False
+
+        # Settings tab switch + workers pane check.
+        page.locator(".settings-tab[data-settings-tab='workers']").first.click(timeout=5000)
+        page.wait_for_timeout(800)
+        workers_meta = (page.locator("#workersSettingsMeta").first.inner_text() or "").strip()
+        lines.append(f"workers_settings_meta={workers_meta}")
+        if "workers:" not in workers_meta.lower():
+            ok = False
+
+        # GitHub IDs mask/show + button labels.
+        page.locator(".settings-tab[data-settings-tab='github']").first.click(timeout=5000)
+        page.wait_for_timeout(500)
+        gh_app_type_before = page.locator("#ghAppId").first.evaluate("node => node.type")
+        gh_install_type_before = page.locator("#ghInstallationId").first.evaluate("node => node.type")
+        lines.append(f"github_app_input_type_before={gh_app_type_before}")
+        lines.append(f"github_install_input_type_before={gh_install_type_before}")
+        if gh_app_type_before != "password" or gh_install_type_before != "password":
+            ok = False
+
+        page.locator("#btnShowAppId").first.click(timeout=5000)
+        page.wait_for_timeout(120)
+        gh_app_type_shown = page.locator("#ghAppId").first.evaluate("node => node.type")
+        lines.append(f"github_app_input_type_after_show={gh_app_type_shown}")
+        if gh_app_type_shown != "text":
+            ok = False
+        page.locator("#btnShowAppId").first.click(timeout=5000)
+        page.wait_for_timeout(120)
+
+        update_btn_exists = page.get_by_role("button", name="Update GitHub IDs").count() > 0
+        clear_btn_exists = page.get_by_role("button", name="Clear GitHub IDs").count() > 0
+        lines.append(f"github_update_button_exists={update_btn_exists}")
+        lines.append(f"github_clear_button_exists={clear_btn_exists}")
+        if not update_btn_exists or not clear_btn_exists:
+            ok = False
+
+        # Clear GitHub IDs, then restore if previous values existed.
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.locator("#btnClearGithubIds").first.click(timeout=5000)
+        page.wait_for_timeout(1400)
+        setup_values_after_clear = _http_get_json(f"{base_url.rstrip('/')}/setup/values")
+        cleared_owner = str(setup_values_after_clear.get("owner") or "")
+        cleared_app = str(setup_values_after_clear.get("app_id") or "")
+        cleared_install = str(setup_values_after_clear.get("installation_id") or "")
+        lines.append(f"github_owner_after_clear={cleared_owner}")
+        lines.append(f"github_app_after_clear={cleared_app}")
+        lines.append(f"github_install_after_clear={cleared_install}")
+        if cleared_owner or cleared_app or cleared_install:
+            ok = False
+
+        if should_restore_github:
+            page.locator("#ghOwner").first.fill(owner_before, timeout=3000)
+            page.locator("#ghAppId").first.fill(app_id_before, timeout=3000)
+            page.locator("#ghInstallationId").first.fill(install_id_before, timeout=3000)
+            page.get_by_role("button", name="Update GitHub IDs").first.click(timeout=5000)
+            page.wait_for_timeout(1200)
+            restored = _http_get_json(f"{base_url.rstrip('/')}/setup/values")
+            owner_restored = str(restored.get("owner") or "")
+            app_restored = str(restored.get("app_id") or "")
+            install_restored = str(restored.get("installation_id") or "")
+            lines.append(f"github_owner_restored={owner_restored}")
+            lines.append(f"github_app_restored={app_restored}")
+            lines.append(f"github_install_restored={install_restored}")
+            if owner_restored != owner_before or app_restored != app_id_before or install_restored != install_id_before:
+                ok = False
+
+        # LLM settings save/read.
+        page.locator(".settings-tab[data-settings-tab='llm']").first.click(timeout=5000)
+        page.wait_for_timeout(500)
+        llm_provider = str(setup_values_before.get("llm_provider") or "openai").strip().lower()
+        order_raw = str(setup_values_before.get("llm_provider_order") or "local,openai").strip().lower()
+        order_parts = [p.strip() for p in order_raw.split(",") if p.strip() in {"openai", "local"}]
+        order_seen = set()
+        order_norm = []
+        for part in order_parts:
+            if part in order_seen:
+                continue
+            order_seen.add(part)
+            order_norm.append(part)
+        llm_provider_order = ",".join(order_norm) or "local,openai"
+        openai_base_url = str(setup_values_before.get("openai_base_url") or "https://api.openai.com").strip()
+        local_llm_base_url = str(setup_values_before.get("local_llm_base_url") or "http://127.0.0.1:11434").strip()
+        local_llm_api_mode = str(setup_values_before.get("local_llm_api_mode") or "chat").strip().lower()
+        local_llm_profile = str(setup_values_before.get("local_llm_profile") or "auto").strip().lower()
+        if local_llm_profile not in {"auto", "gpu16", "gpu24", "cpu"}:
+            local_llm_profile = "auto"
+        local_llm_model = str(setup_values_before.get("local_llm_model") or "").strip()
+
+        llm_form = page.locator("#setupLlmForm")
+        if llm_form.count() > 0:
+            if llm_provider in {"openai", "local", "auto"}:
+                page.locator("#llmProvider").first.select_option(llm_provider)
+            page.locator("#llmProviderOrder").first.fill(llm_provider_order, timeout=3000)
+            page.locator("#openaiBaseUrl").first.fill(openai_base_url, timeout=3000)
+            page.locator("#localLlmBaseUrl").first.fill(local_llm_base_url, timeout=3000)
+            if local_llm_api_mode in {"chat", "responses"}:
+                page.locator("#localLlmApiMode").first.select_option(local_llm_api_mode)
+            page.locator("#localLlmProfile").first.select_option(local_llm_profile)
+            page.locator("#localLlmModel").first.fill(local_llm_model, timeout=3000)
+            page.locator("#openaiApiKey").first.fill("", timeout=3000)
+            page.locator("#localLlmApiKey").first.fill("", timeout=3000)
+
+            openai_clear = page.locator("#openaiApiKeyClear").first
+            if openai_clear.is_checked():
+                openai_clear.uncheck(timeout=2000)
+            local_clear = page.locator("#localLlmApiKeyClear").first
+            if local_clear.is_checked():
+                local_clear.uncheck(timeout=2000)
+
+            page.get_by_role("button", name="Save LLM Settings").click(timeout=5000)
+            page.wait_for_timeout(2000)
+
+            setup_values_after = _http_get_json(f"{base_url.rstrip('/')}/setup/values")
+            provider_after = str(setup_values_after.get("llm_provider") or "").strip().lower()
+            provider_order_after = str(setup_values_after.get("llm_provider_order") or "").strip().lower()
+            openai_base_after = str(setup_values_after.get("openai_base_url") or "").strip().rstrip("/")
+            local_base_after = str(setup_values_after.get("local_llm_base_url") or "").strip().rstrip("/")
+            local_mode_after = str(setup_values_after.get("local_llm_api_mode") or "").strip().lower()
+            local_profile_after = str(setup_values_after.get("local_llm_profile") or "").strip().lower()
+            local_model_after = str(setup_values_after.get("local_llm_model") or "").strip()
+
+            lines.append(f"llm_provider_after={provider_after}")
+            lines.append(f"llm_provider_order_after={provider_order_after}")
+            lines.append(f"llm_openai_base_after={openai_base_after}")
+            lines.append(f"llm_local_base_after={local_base_after}")
+            lines.append(f"llm_local_mode_after={local_mode_after}")
+            lines.append(f"llm_local_profile_after={local_profile_after}")
+
+            if provider_after != llm_provider:
+                ok = False
+            if provider_order_after != llm_provider_order:
+                ok = False
+            if openai_base_after != openai_base_url.rstrip("/"):
+                ok = False
+            if local_base_after != local_llm_base_url.rstrip("/"):
+                ok = False
+            if local_mode_after != local_llm_api_mode:
+                ok = False
+            if local_profile_after != local_llm_profile:
+                ok = False
+            if local_model_after != local_llm_model:
+                ok = False
+        else:
+            lines.append("llm_setup_check_skipped=form_not_found")
+
+        # Run once
+        page.get_by_role("button", name="Run Once").click(timeout=5000)
+        page.wait_for_timeout(2200)
+        lines.append("run_once_clicked=true")
+
+        # Start worker
+        page.get_by_role("button", name="Start Worker").click(timeout=5000)
+        page.wait_for_timeout(2200)
+        repos_after_start = _http_get_json(f"{base_url.rstrip('/')}/repos")
+        running_after_start = _dashboard_repo_value(repos_after_start, target_repo, "running")
+        lines.append(f"running_after_start={running_after_start}")
+        if running_after_start is not True:
+            ok = False
+
+        # Stop worker
+        page.get_by_role("button", name="Stop Worker").click(timeout=5000)
+        page.wait_for_timeout(2200)
+        repos_after_stop = _http_get_json(f"{base_url.rstrip('/')}/repos")
+        running_after_stop = _dashboard_repo_value(repos_after_stop, target_repo, "running")
+        lines.append(f"running_after_stop={running_after_stop}")
+        if running_after_stop is not False:
+            ok = False
+
+        # Refresh
+        page.get_by_role("button", name="Refresh").click(timeout=5000)
+        page.wait_for_timeout(1200)
+        lines.append("refresh_clicked=true")
+
+        # Project toggle (enable/disable/enable)
+        projects = _http_get_json(f"{base_url.rstrip('/')}/projects")
+        proj_items = projects.get("projects", []) if isinstance(projects, dict) else []
+        if proj_items:
+            proj_name = str(proj_items[0].get("repo"))
+            proj_enabled_initial = bool(proj_items[0].get("enabled"))
+            lines.append(f"project_target={proj_name}")
+            lines.append(f"project_initial_enabled={proj_enabled_initial}")
+
+            # Ensure enabled before disable test.
+            if not proj_enabled_initial:
+                page.locator(f"#projectsList button[data-project='{proj_name}'][data-action='enable']").first.click(
+                    timeout=5000
+                )
+                page.wait_for_timeout(2000)
+            proj_after_enable = _http_get_json(f"{base_url.rstrip('/')}/projects")
+            enabled_now = None
+            for item in (proj_after_enable.get("projects", []) if isinstance(proj_after_enable, dict) else []):
+                if str(item.get("repo")) == proj_name:
+                    enabled_now = item.get("enabled")
+                    break
+            lines.append(f"project_after_enable={enabled_now}")
+            if enabled_now is not True:
+                ok = False
+
+            page.locator(f"#projectsList button[data-project='{proj_name}'][data-action='disable']").first.click(
+                timeout=5000
+            )
+            page.wait_for_timeout(2000)
+            proj_after_disable = _http_get_json(f"{base_url.rstrip('/')}/projects")
+            enabled_disabled = None
+            for item in (proj_after_disable.get("projects", []) if isinstance(proj_after_disable, dict) else []):
+                if str(item.get("repo")) == proj_name:
+                    enabled_disabled = item.get("enabled")
+                    break
+            lines.append(f"project_after_disable={enabled_disabled}")
+            if enabled_disabled is not False:
+                ok = False
+
+            page.locator(f"#projectsList button[data-project='{proj_name}'][data-action='enable']").first.click(
+                timeout=5000
+            )
+            page.wait_for_timeout(2000)
+            proj_after_reenable = _http_get_json(f"{base_url.rstrip('/')}/projects")
+            enabled_reenabled = None
+            for item in (proj_after_reenable.get("projects", []) if isinstance(proj_after_reenable, dict) else []):
+                if str(item.get("repo")) == proj_name:
+                    enabled_reenabled = item.get("enabled")
+                    break
+            lines.append(f"project_after_reenable={enabled_reenabled}")
+            if enabled_reenabled is not True:
+                ok = False
+        else:
+            lines.append("project_toggle_skipped=no projects")
+
+        # Automation toggle
+        auto_btn = page.locator(f"#repoList button[data-repo='{target_repo}'][data-action='auto-toggle']").first
+        auto_text = (auto_btn.inner_text() or "").strip()
+        if "Enable Auto" in auto_text:
+            auto_btn.click(timeout=5000)
+            page.wait_for_timeout(1800)
+        repos_auto_on = _http_get_json(f"{base_url.rstrip('/')}/repos")
+        automation_on = _dashboard_repo_value(repos_auto_on, target_repo, "automation")
+        lines.append(f"automation_after_enable={automation_on}")
+        if automation_on is not True:
+            ok = False
+
+        auto_btn2 = page.locator(f"#repoList button[data-repo='{target_repo}'][data-action='auto-toggle']").first
+        auto_text2 = (auto_btn2.inner_text() or "").strip()
+        if "Disable Auto" in auto_text2:
+            auto_btn2.click(timeout=5000)
+            page.wait_for_timeout(1800)
+        repos_auto_off = _http_get_json(f"{base_url.rstrip('/')}/repos")
+        automation_off = _dashboard_repo_value(repos_auto_off, target_repo, "automation")
+        lines.append(f"automation_after_disable={automation_off}")
+        if automation_off is not False:
+            ok = False
+
+        # Notes for LLM checks.
+        global_before_resp = _http_get_json(f"{base_url.rstrip('/')}/rules/global")
+        global_before = global_before_resp.get("rules", {}) if isinstance(global_before_resp, dict) else {}
+        original_global_rules = str(global_before.get("rules_markdown") or "")
+
+        project_before_resp = _http_get_json(f"{base_url.rstrip('/')}/rules/projects/{target_repo}")
+        project_before = project_before_resp.get("rules", {}) if isinstance(project_before_resp, dict) else {}
+        original_project_rules = str(project_before.get("rules_markdown") or "")
+        original_project_exists = bool(project_before.get("exists"))
+
+        global_probe = f"smoke-global-rule-{int(time.time())}"
+        page.locator("#rulesGlobalInput").first.fill(global_probe, timeout=5000)
+        page.locator("#btnSaveGlobalRules").first.click(timeout=5000)
+        page.wait_for_timeout(1200)
+        global_after_resp = _http_get_json(f"{base_url.rstrip('/')}/rules/global")
+        global_after = global_after_resp.get("rules", {}) if isinstance(global_after_resp, dict) else {}
+        global_saved = str(global_after.get("rules_markdown") or "")
+        lines.append(f"rules_global_saved_match={global_saved == global_probe}")
+        if global_saved != global_probe:
+            ok = False
+
+        project_probe = f"smoke-project-rule-{int(time.time())}"
+        page.locator("#rulesProjectInput").first.fill(project_probe, timeout=5000)
+        page.locator("#btnSaveProjectRules").first.click(timeout=5000)
+        page.wait_for_timeout(1200)
+        project_after_save_resp = _http_get_json(f"{base_url.rstrip('/')}/rules/projects/{target_repo}")
+        project_after_save = project_after_save_resp.get("rules", {}) if isinstance(project_after_save_resp, dict) else {}
+        project_saved = str(project_after_save.get("rules_markdown") or "")
+        lines.append(f"rules_project_saved_match={project_saved == project_probe}")
+        if project_saved != project_probe:
+            ok = False
+
+        page.locator("#btnResetProjectRules").first.click(timeout=5000)
+        page.wait_for_timeout(1200)
+        project_after_delete_resp = _http_get_json(f"{base_url.rstrip('/')}/rules/projects/{target_repo}")
+        project_after_delete = project_after_delete_resp.get("rules", {}) if isinstance(project_after_delete_resp, dict) else {}
+        project_deleted = not bool(project_after_delete.get("exists"))
+        lines.append(f"rules_project_deleted={project_deleted}")
+        if not project_deleted:
+            ok = False
+
+        effective_after_delete = _http_get_json(f"{base_url.rstrip('/')}/rules/effective?repo={target_repo}")
+        effective_text_after_delete = str(effective_after_delete.get("text") or "")
+        project_still_present = project_probe in effective_text_after_delete
+        lines.append(f"rules_effective_project_probe_present_after_delete={project_still_present}")
+        if project_still_present:
+            ok = False
+
+    except Exception as e:
+        ok = False
+        lines.append(f"dashboard_check_error={e}")
+    finally:
+        # Restore rule state after checks to avoid polluting runtime behavior.
+        try:
+            page.locator("#rulesGlobalInput").first.fill(original_global_rules, timeout=3000)
+            page.locator("#btnSaveGlobalRules").first.click(timeout=5000)
+            page.wait_for_timeout(600)
+            lines.append("rules_restore_global=ok")
+        except Exception as e:
+            lines.append(f"rules_restore_global_error={e}")
+            ok = False
+
+        if target_repo:
+            try:
+                if original_project_exists:
+                    page.locator("#rulesProjectInput").first.fill(original_project_rules, timeout=3000)
+                    page.locator("#btnSaveProjectRules").first.click(timeout=5000)
+                else:
+                    page.locator("#btnResetProjectRules").first.click(timeout=5000)
+                page.wait_for_timeout(600)
+                lines.append("rules_restore_project=ok")
+            except Exception as e:
+                lines.append(f"rules_restore_project_error={e}")
+                ok = False
+
+    return ok, lines
+
+
+def _playwright_smoke(base_url: str, project_dir: str, *, nav_timeout_ms: int, max_clicks: int):
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        return False, f"Playwright Python package unavailable: {e}"
+
+    run_id = f"{_fingerprint(project_dir)}-{int(time.time())}"
+    screenshot_path = os.path.join("/tmp", f"codingai-web-smoke-{run_id}.png")
+    browser_logs = []
+
+    profile = os.getenv("WEB_SMOKE_PROFILE", "").strip().lower()
+
+    def _one_run():
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(ignore_https_errors=True)
+            page = context.new_page()
+
+            page.on("console", lambda msg: browser_logs.append(f"[console:{msg.type}] {msg.text}"))
+            page.on("pageerror", lambda err: browser_logs.append(f"[pageerror] {err}"))
+
+            resp = page.goto(base_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+            status = int(resp.status) if resp is not None and getattr(resp, "status", None) is not None else 0
+            title = page.title() or ""
+            dashboard_mode = profile in {"codingai", "codingai_dashboard"} or "codingai control plane" in title.lower()
+
+            typed = False
+            click_count = 0
+            dashboard_ok = True
+            dashboard_lines = []
+
+            if dashboard_mode:
+                d_ok, d_lines = _playwright_dashboard_checks(page, base_url)
+                dashboard_ok = d_ok
+                dashboard_lines = d_lines
+                click_count = 5
+            else:
+                text_input = page.query_selector("input[type='text'],input:not([type]),textarea")
+                if text_input is not None:
+                    try:
+                        text_input.fill("codingai smoke input", timeout=2500)
+                        typed = True
+                    except Exception as e:
+                        browser_logs.append(f"[interaction:fill] {e}")
+
+                clickable = page.query_selector_all("button,[role='button'],a[href],input[type='submit']")
+                for idx, item in enumerate(clickable):
+                    if idx >= max_clicks:
+                        break
+                    try:
+                        if hasattr(item, "is_visible") and not item.is_visible():
+                            continue
+                        item.click(timeout=2500)
+                        page.wait_for_timeout(350)
+                        click_count += 1
+                    except Exception as e:
+                        browser_logs.append(f"[interaction:click:{idx}] {e}")
+
+            page.screenshot(path=screenshot_path, full_page=True)
+            url_after = page.url
+
+            context.close()
+            browser.close()
+
+            return {
+                "status": status,
+                "title": title,
+                "typed": typed,
+                "click_count": click_count,
+                "url_after": url_after,
+                "screenshot": screenshot_path,
+                "dashboard_mode": dashboard_mode,
+                "dashboard_ok": dashboard_ok,
+                "dashboard_lines": dashboard_lines,
+            }
+
+    try:
+        result = _one_run()
+    except Exception as e:
+        err_text = str(e)
+        if "playwright install" in err_text.lower() or "executable doesn't exist" in err_text.lower():
+            install = _run([sys.executable, "-m", "playwright", "install", "chromium"])
+            install_out = ((install.stdout or "") + "\n" + (install.stderr or "")).strip()
+            if install.returncode != 0:
+                return False, f"Playwright browser install failed:\n{install_out}"
+            try:
+                result = _one_run()
+            except Exception as inner:
+                return False, f"Playwright smoke run failed after install: {inner}"
+        else:
+            return False, f"Playwright smoke run failed: {e}"
+
+    lines = [
+        f"base_url={base_url}",
+        f"http_status={result.get('status')}",
+        f"title={result.get('title')}",
+        f"dashboard_mode={result.get('dashboard_mode')}",
+        f"dashboard_ok={result.get('dashboard_ok')}",
+        f"typed_input={result.get('typed')}",
+        f"clicked_elements={result.get('click_count')}",
+        f"url_after={result.get('url_after')}",
+        f"screenshot={result.get('screenshot')}",
+    ]
+    if result.get("dashboard_lines"):
+        lines.extend(result.get("dashboard_lines"))
+    if browser_logs:
+        lines.append("--- browser logs ---")
+        lines.extend(browser_logs[-80:])
+
+    status = int(result.get("status", 0) or 0)
+    ok = (status == 0 or (200 <= status < 400)) and bool(result.get("dashboard_ok", True))
+    return ok, "\n".join(lines)
+
+
+def strat_web_live_playwright(repo_path: str, repo_analysis: dict):
+    base_url_override = os.getenv("WEB_SMOKE_BASE_URL", "").strip()
+    nav_timeout_ms = max(5000, _safe_int(os.getenv("WEB_SMOKE_NAV_TIMEOUT_MS", "45000"), 45000))
+    max_clicks = max(1, _safe_int(os.getenv("WEB_SMOKE_MAX_CLICKS", "6"), 6))
+
+    if base_url_override:
+        sections = [
+            f"project_dir={repo_path}",
+            "server_mode=external_base_url",
+            f"base_url={base_url_override}",
+        ]
+        smoke_ok, smoke_out = _playwright_smoke(
+            base_url=base_url_override,
+            project_dir=repo_path,
+            nav_timeout_ms=nav_timeout_ms,
+            max_clicks=max_clicks,
+        )
+        sections.append("--- playwright smoke ---")
+        sections.append(smoke_out)
+        return smoke_ok, "\n".join([s for s in sections if s]).strip()
+
+    pkg = find_first_web_package(repo_analysis)
+    if not pkg:
+        return False, (
+            "No web node project detected for web_live_playwright strategy and "
+            "WEB_SMOKE_BASE_URL is not set."
+        )
+
+    package_json = _load_package_json(pkg)
+    if not package_json:
+        return False, f"Could not read package.json: {pkg}"
+
+    scripts = package_json.get("scripts", {})
+    if not isinstance(scripts, dict):
+        scripts = {}
+
+    server_script = _pick_script(scripts, WEB_SERVER_SCRIPT_CANDIDATES)
+    if not server_script:
+        return False, (
+            "No server script found in package.json. Expected one of: "
+            + ", ".join(WEB_SERVER_SCRIPT_CANDIDATES)
+        )
+
+    e2e_script = _pick_script(scripts, WEB_TEST_SCRIPT_CANDIDATES)
+    project_dir = os.path.dirname(pkg)
+    host = os.getenv("WEB_SMOKE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = _pick_free_local_port()
+    base_url = f"http://{host}:{port}"
+    startup_timeout = max(20, _safe_int(os.getenv("WEB_SMOKE_STARTUP_TIMEOUT_SECONDS", "90"), 90))
+
+    sections = [
+        f"project_dir={project_dir}",
+        f"server_script={server_script}",
+        f"e2e_script={e2e_script or ''}",
+        f"base_url={base_url}",
+    ]
+
+    install = _run(["npm", "ci"], cwd=project_dir)
+    install_out = ((install.stdout or "") + "\n" + (install.stderr or "")).strip()
+    if install.returncode != 0:
+        fallback = _run(["npm", "install"], cwd=project_dir)
+        fallback_out = ((fallback.stdout or "") + "\n" + (fallback.stderr or "")).strip()
+        sections.append("--- npm ci ---")
+        sections.append(install_out)
+        sections.append("--- npm install (fallback) ---")
+        sections.append(fallback_out)
+        if fallback.returncode != 0:
+            return False, "\n".join([s for s in sections if s]).strip()
+
+    if server_script == "start" and "build" in scripts:
+        build = _run(["npm", "run", "build"], cwd=project_dir)
+        build_out = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
+        sections.append("--- npm run build ---")
+        sections.append(build_out)
+        if build.returncode != 0:
+            return False, "\n".join([s for s in sections if s]).strip()
+
+    server_env = os.environ.copy()
+    server_env["HOST"] = host
+    server_env["PORT"] = str(port)
+    server_env["CI"] = "1"
+    log_path = os.path.join("/tmp", f"codingai-web-server-{_fingerprint(project_dir)}-{int(time.time())}.log")
+
+    server_variants = [
+        ["npm", "run", server_script, "--", "--host", host, "--port", str(port)],
+        ["npm", "run", server_script],
+    ]
+    server_proc = None
+    started = False
+    start_details = []
+
+    try:
+        with open(log_path, "a", encoding="utf-8") as log_f:
+            for cmd in server_variants:
+                log_f.write(f"\n=== server start command: {' '.join(cmd)} ===\n")
+                log_f.flush()
+                server_proc = subprocess.Popen(
+                    cmd,
+                    cwd=project_dir,
+                    env=server_env,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                ready, detail = _wait_for_http(base_url, startup_timeout, proc=server_proc)
+                start_details.append(f"cmd={' '.join(cmd)} -> {detail}")
+                if ready:
+                    started = True
+                    break
+                _terminate_process(server_proc)
+                server_proc = None
+
+        sections.append("--- server startup attempts ---")
+        sections.extend(start_details)
+
+        if not started:
+            sections.append(f"server_log={log_path}")
+            sections.append("--- server log tail ---")
+            sections.append(_tail_text_file(log_path))
+            return False, "\n".join([s for s in sections if s]).strip()
+
+        smoke_ok, smoke_out = _playwright_smoke(
+            base_url=base_url,
+            project_dir=project_dir,
+            nav_timeout_ms=nav_timeout_ms,
+            max_clicks=max_clicks,
+        )
+        sections.append("--- playwright smoke ---")
+        sections.append(smoke_out)
+
+        if not smoke_ok:
+            sections.append(f"server_log={log_path}")
+            sections.append("--- server log tail ---")
+            sections.append(_tail_text_file(log_path))
+            return False, "\n".join([s for s in sections if s]).strip()
+
+        if e2e_script:
+            test_env = os.environ.copy()
+            test_env["BASE_URL"] = base_url
+            test_env["PLAYWRIGHT_BASE_URL"] = base_url
+            test_env["HOST"] = host
+            test_env["PORT"] = str(port)
+            test_env["CI"] = "1"
+            e2e = _run(["npm", "run", e2e_script], cwd=project_dir, env=test_env)
+            e2e_out = ((e2e.stdout or "") + "\n" + (e2e.stderr or "")).strip()
+            sections.append(f"--- npm run {e2e_script} ---")
+            sections.append(e2e_out)
+            if e2e.returncode != 0:
+                sections.append(f"server_log={log_path}")
+                sections.append("--- server log tail ---")
+                sections.append(_tail_text_file(log_path))
+                return False, "\n".join([s for s in sections if s]).strip()
+
+        sections.append(f"server_log={log_path}")
+        sections.append("--- server log tail ---")
+        sections.append(_tail_text_file(log_path))
+        return True, "\n".join([s for s in sections if s]).strip()
+    finally:
+        _terminate_process(server_proc)
+
+
 def run_tests(
     repo_path: str,
     repo_name: str,
@@ -466,11 +1574,31 @@ def run_tests(
     if repo_analysis["dotnet_projects"]:
         strategies.append({"id": "dotnet_build_docker", "desc": "dotnet build in dotnet/sdk container", "kind": "container"})
         strategies.append({"id": "dotnet_build_docker_enable_windows_targeting", "desc": "dotnet build with EnableWindowsTargeting=true", "kind": "container"})
+    if repo_analysis.get("web_node_projects") or os.getenv("WEB_SMOKE_BASE_URL", "").strip():
+        strategies.append(
+            {
+                "id": "web_live_playwright",
+                "desc": "launch web app and run Playwright live smoke interactions",
+                "kind": "native",
+            }
+        )
     if repo_analysis["node_projects"]:
         strategies.append({"id": "node_build_docker", "desc": "node build in node:20 container", "kind": "container"})
+    if (
+        repo_analysis.get("dotnet_projects")
+        or repo_analysis.get("node_projects")
+        or repo_analysis.get("has_python_files")
+        or repo_analysis.get("has_docker_compose")
+        or repo_analysis.get("has_dockerfile_root")
+    ):
+        strategies.append({"id": "semgrep_scan", "desc": "semgrep static scan", "kind": "security"})
+        strategies.append({"id": "trivy_scan", "desc": "trivy filesystem security scan", "kind": "security"})
+        if repo_analysis.get("has_python_files"):
+            strategies.append({"id": "bandit_scan", "desc": "bandit python security scan", "kind": "security"})
+        strategies.append({"id": "sonarqube_scan", "desc": "sonarqube scanner analysis", "kind": "security"})
 
     if not strategies:
-        out = "No supported test strategy found (repo scan found no docker/dotnet/node markers)."
+        out = "No supported test strategy found (repo scan found no docker/dotnet/node/web markers)."
         report["final_error_fingerprint"] = _fingerprint(out)
         report["strategy_memory_update"] = memory
         return False, out, report
@@ -532,8 +1660,18 @@ def run_tests(
             ok, out = strat_dotnet_build_docker(repo_path, repo_analysis)
         elif current["id"] == "dotnet_build_docker_enable_windows_targeting":
             ok, out = strat_dotnet_build_docker_enable_windows_targeting(repo_path, repo_analysis)
+        elif current["id"] == "web_live_playwright":
+            ok, out = strat_web_live_playwright(repo_path, repo_analysis)
         elif current["id"] == "node_build_docker":
             ok, out = strat_node_build_docker(repo_path, repo_analysis)
+        elif current["id"] == "semgrep_scan":
+            ok, out = strat_semgrep_scan(repo_path)
+        elif current["id"] == "trivy_scan":
+            ok, out = strat_trivy_scan(repo_path)
+        elif current["id"] == "bandit_scan":
+            ok, out = strat_bandit_scan(repo_path, repo_analysis)
+        elif current["id"] == "sonarqube_scan":
+            ok, out = strat_sonarqube_scan(repo_path, repo_name)
         else:
             ok, out = False, f"Unknown strategy id: {current['id']}"
 

@@ -4,14 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SRC_DIR="${1:-$DEFAULT_SRC_DIR}"
-REMOTE_URL="${2:-https://github.com/davidertl/codingAI.git}"
+REMOTE_URL="${2:-}"
 BRANCH="${3:-localstate}"
-AUTHOR_MODE="${AUTHOR_MODE:-davidertl}"   # davidertl | bot
+AUTHOR_MODE="${AUTHOR_MODE:-bot}"   # bot | custom
 COMMIT_MSG="${COMMIT_MSG:-chore: initial localstate snapshot}"
 INCLUDE_ALL="${INCLUDE_ALL:-0}"
 
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "Source directory not found: $SRC_DIR" >&2
+  exit 1
+fi
+
+if [[ -z "$REMOTE_URL" ]]; then
+  echo "Remote URL is required as argument #2 (e.g. https://github.com/your-org/codingAI.git)." >&2
   exit 1
 fi
 
@@ -34,12 +39,9 @@ if [[ "$INCLUDE_ALL" != "1" ]]; then
     ".codex/sessions"
     ".codex/tmp"
     "ai-agent/venv"
-    "workspaces/KRT-leadtool/.git"
-    "workspaces/KRT-leadtool-test/.git"
-    "workspaces/KRT-Com_Discord/.git"
-    "workspaces/KRT-leadtool/frontend/node_modules"
-    "workspaces/KRT-leadtool-test/frontend/node_modules"
-    "workspaces/KRT-leadtool/frontend/dist"
+    "workspaces"
+    "ai-agent/.agent"
+    "ai-agent/state.db"
   )
 fi
 
@@ -63,17 +65,17 @@ cd "$SNAPSHOT_DIR"
 git init -b "$BRANCH" >/dev/null
 
 case "$AUTHOR_MODE" in
-  davidertl)
-    git config user.name "davidertl"
-    git config user.email "github.aidev@david-ertl.de"
-    ;;
   bot)
     # This creates a bot-like author string; GitHub "Verified bot" requires GitHub App/API signing path.
     git config user.name "local-aiagent[bot]"
     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
     ;;
+  custom)
+    git config user.name "${AUTHOR_NAME:-local-aiagent}"
+    git config user.email "${AUTHOR_EMAIL:-local-aiagent@example.invalid}"
+    ;;
   *)
-    echo "Invalid AUTHOR_MODE: $AUTHOR_MODE (expected: davidertl | bot)" >&2
+    echo "Invalid AUTHOR_MODE: $AUTHOR_MODE (expected: bot | custom)" >&2
     exit 1
     ;;
 esac

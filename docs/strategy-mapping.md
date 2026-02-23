@@ -1,5 +1,5 @@
 # Strategy Mapping
-Version: 1.0.1
+Version: experimental-0.21.0
 
 Source: `ai-agent/core/test_runner.py`
 
@@ -9,6 +9,7 @@ Source: `ai-agent/core/test_runner.py`
 2. `has_dockerfile_root`: root `Dockerfile` exists.
 3. `.NET detected`: any `.csproj` or `.sln` outside `.git`/`node_modules`.
 4. `Node detected`: any `package.json` outside `.git`/`node_modules`.
+5. `Web Node detected`: node package with web signals (server/test scripts, framework deps, Playwright config, or `index.html`).
 
 ## Candidate strategy set and order
 
@@ -17,7 +18,12 @@ Source: `ai-agent/core/test_runner.py`
 3. `docker_build`
 4. `dotnet_build_docker`
 5. `dotnet_build_docker_enable_windows_targeting`
-6. `node_build_docker`
+6. `web_live_playwright`
+7. `node_build_docker`
+8. `semgrep_scan`
+9. `trivy_scan`
+10. `bandit_scan` (only when Python files are present)
+11. `sonarqube_scan`
 
 ## Selection policy
 
@@ -48,4 +54,10 @@ Persisted under `state["strategy_memory"][repo][strategy_id]`:
 
 1. `docker_build` only triggers for root `Dockerfile`.
 2. Node and .NET flows currently build first discovered project file path.
-3. Error text sent to LLM is trimmed to relevant lines to reduce prompt noise.
+3. `web_live_playwright` launches a local web server, simulates browser interactions, and optionally runs an e2e npm script when present.
+4. Security scanners are available as native/docker-backed strategies:
+   - `semgrep_scan` (`SEMGREP_CONFIG`, `SEMGREP_DOCKER_IMAGE`)
+   - `trivy_scan` (`TRIVY_SEVERITY`, `TRIVY_SCANNERS`, `TRIVY_TIMEOUT`, `TRIVY_IGNORE_UNFIXED`, `TRIVY_DOCKER_IMAGE`)
+   - `bandit_scan` (Python-only; local `bandit` or docker fallback)
+   - `sonarqube_scan` (`SONAR_HOST_URL`, `SONAR_TOKEN`, optional `SONAR_PROJECT_KEY`, `SONAR_QUALITY_GATE_WAIT`, `SONAR_SCANNER_DOCKER_IMAGE`)
+5. Error text sent to LLM is trimmed to relevant lines to reduce prompt noise.

@@ -1,8 +1,7 @@
 import requests
 
 from github.app_auth import get_installation_token
-
-OWNER = "davidertl"
+from github.config import get_github_owner
 API_BASE = "https://api.github.com"
 
 
@@ -15,8 +14,9 @@ def _headers():
 
 
 def get_pull_request(repo, pr_number):
+    owner = get_github_owner()
     r = requests.get(
-        f"{API_BASE}/repos/{OWNER}/{repo}/pulls/{int(pr_number)}",
+        f"{API_BASE}/repos/{owner}/{repo}/pulls/{int(pr_number)}",
         headers=_headers(),
     )
     r.raise_for_status()
@@ -25,13 +25,14 @@ def get_pull_request(repo, pr_number):
 
 def get_pr_ci_status(repo, pr_number):
     pr = get_pull_request(repo, pr_number)
+    owner = get_github_owner()
     head = pr.get("head", {}) if isinstance(pr, dict) else {}
     head_sha = str(head.get("sha", "")).strip()
     if not head_sha:
         raise RuntimeError(f"Missing head SHA for PR #{pr_number}")
 
     status_r = requests.get(
-        f"{API_BASE}/repos/{OWNER}/{repo}/commits/{head_sha}/status",
+        f"{API_BASE}/repos/{owner}/{repo}/commits/{head_sha}/status",
         headers=_headers(),
     )
     status_r.raise_for_status()
@@ -39,7 +40,7 @@ def get_pr_ci_status(repo, pr_number):
     statuses = status_json.get("statuses", []) if isinstance(status_json, dict) else []
 
     checks_r = requests.get(
-        f"{API_BASE}/repos/{OWNER}/{repo}/commits/{head_sha}/check-runs",
+        f"{API_BASE}/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
         headers=_headers(),
         params={"per_page": 100},
     )

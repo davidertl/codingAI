@@ -15,6 +15,7 @@ from llm.provider import (
     resolve_model,
     try_failover,
 )
+from llm.rules_instructions import with_rules_instructions
 from paths import LOGS_DIR
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -103,9 +104,13 @@ def _summarize_results(query: str, results: List[Dict[str, str]]) -> Tuple[str, 
         "Results:\n" + "\n".join(parts)
     )
     model = resolve_model(RESEARCH_SUMMARY_MODEL)
+    summary_instructions = with_rules_instructions(
+        "Return a concise summary. 4 bullets max. Do not include URLs.",
+        global_only=True,
+    )
     provider, url, headers, payload = build_llm_request(
         model=model,
-        instructions="Return a concise summary. 4 bullets max. Do not include URLs.",
+        instructions=summary_instructions,
         input_text=input_text,
         max_output_tokens=RESEARCH_SUMMARY_MAX_TOKENS,
     )
@@ -141,7 +146,7 @@ def _summarize_results(query: str, results: List[Dict[str, str]]) -> Tuple[str, 
             break
         provider, url, headers, payload = build_llm_request(
             model=model,
-            instructions="Return a concise summary. 4 bullets max. Do not include URLs.",
+            instructions=summary_instructions,
             input_text=input_text,
             max_output_tokens=RESEARCH_SUMMARY_MAX_TOKENS,
         )

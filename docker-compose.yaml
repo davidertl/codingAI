@@ -16,11 +16,27 @@ services:
       - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-local,openai}
       - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
       - LLM_REQUIRE_HEALTHY=${LLM_REQUIRE_HEALTHY:-true}
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434}
       - OBS_EVENT_LOG_ENABLED=${OBS_EVENT_LOG_ENABLED:-true}
     volumes:
       - ./ai-agent/.env:/app/ai-agent/.env
+      - ./ai-agent/.agent:/app/ai-agent/.agent
       - ./ai-agent/github_app:/app/ai-agent/github_app
       - ./ai-agent/logs:/app/ai-agent/logs
       - ./ai-agent/state.json:/app/ai-agent/state.json
+      - ./ai-agent/state.db:/app/ai-agent/state.db
       - ./workspaces:/app/workspaces
     restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    container_name: codingai-ollama
+    profiles: ["local-llm"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama-data:

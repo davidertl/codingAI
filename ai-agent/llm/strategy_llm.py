@@ -16,6 +16,7 @@ from llm.provider import (
     resolve_model,
     try_failover,
 )
+from llm.rules_instructions import with_rules_instructions
 
 from paths import ENV_FILE
 
@@ -218,6 +219,7 @@ def pick_next_strategy(
         '  "confidence": number\n'
         "}\n"
     )
+    instructions = with_rules_instructions(instructions, repo=repo_name, require_json_only=True)
 
     user = {
         "repo_name": repo_name,

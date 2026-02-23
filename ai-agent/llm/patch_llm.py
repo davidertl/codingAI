@@ -18,6 +18,7 @@ from llm.provider import (
     resolve_model,
     try_failover,
 )
+from llm.rules_instructions import with_rules_instructions
 
 from paths import ENV_FILE
 
@@ -363,6 +364,7 @@ def propose_patch_ops(
         "- Keep patch_ops small and focused.\n"
         "- content must be complete final file content for create/update.\n"
     )
+    instructions = with_rules_instructions(instructions, repo=repo_name, require_json_only=True)
 
     user_input = {
         "repo_name": repo_name,
@@ -477,6 +479,7 @@ def propose_test_patch_ops(
         "- Paths must be repo-relative and safe.\n"
         "- Keep patch_ops focused and small.\n"
     )
+    instructions = with_rules_instructions(instructions, repo=repo_name, require_json_only=True)
 
     user_input = {
         "repo_name": repo_name,

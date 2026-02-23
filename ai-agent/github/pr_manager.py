@@ -1,7 +1,6 @@
 import requests
 from github.app_auth import get_installation_token
-
-OWNER = "davidertl"
+from github.config import get_github_owner
 
 
 def _headers():
@@ -14,9 +13,10 @@ def _headers():
 
 def _find_open_pr_for_branch(repo, branch):
     headers = _headers()
-    check_url = f"https://api.github.com/repos/{OWNER}/{repo}/pulls"
+    owner = get_github_owner()
+    check_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
     params = {
-        "head": f"{OWNER}:{branch}",
+        "head": f"{owner}:{branch}",
         "state": "open",
     }
     r = requests.get(check_url, headers=headers, params=params)
@@ -37,6 +37,7 @@ def get_open_pr_for_branch(repo, branch):
 
 
 def create_or_get_pr(repo, branch, issue_number):
+    owner = get_github_owner()
     pr = _find_open_pr_for_branch(repo, branch)
     if pr:
         print("PR already exists.")
@@ -48,7 +49,7 @@ def create_or_get_pr(repo, branch, issue_number):
 
     # Create PR
     headers = _headers()
-    create_url = f"https://api.github.com/repos/{OWNER}/{repo}/pulls"
+    create_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
     data = {
         "title": f"AI Fix for Issue #{issue_number}",
         "head": branch,
@@ -72,7 +73,8 @@ def create_or_get_pr(repo, branch, issue_number):
 
 def list_pr_comments(repo, pr_number, per_page=100):
     headers = _headers()
-    list_url = f"https://api.github.com/repos/{OWNER}/{repo}/issues/{pr_number}/comments"
+    owner = get_github_owner()
+    list_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments"
     r = requests.get(list_url, headers=headers, params={"per_page": per_page})
     r.raise_for_status()
     return r.json()
@@ -89,7 +91,8 @@ def has_ai_stop_comment(repo, pr_number, phrase="AI Stop"):
 
 def upsert_pr_comment(repo, pr_number, body, marker="<!-- codingai-test-report -->"):
     headers = _headers()
-    list_url = f"https://api.github.com/repos/{OWNER}/{repo}/issues/{pr_number}/comments"
+    owner = get_github_owner()
+    list_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments"
     comments = list_pr_comments(repo, pr_number, per_page=100)
 
     existing_comment = None
@@ -100,7 +103,7 @@ def upsert_pr_comment(repo, pr_number, body, marker="<!-- codingai-test-report -
 
     if existing_comment:
         comment_id = existing_comment["id"]
-        update_url = f"https://api.github.com/repos/{OWNER}/{repo}/issues/comments/{comment_id}"
+        update_url = f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}"
         ur = requests.patch(update_url, headers=headers, json={"body": body})
         ur.raise_for_status()
         return {

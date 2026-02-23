@@ -1,6 +1,6 @@
 # CodingAI Docs
 
-Last verified: 2026-02-22 (UTC)  
+Last verified: 2026-02-23 (UTC)  
 Tracked branch: `localstate` (`/tmp/codingai-localstate`)
 
 This folder documents the current implementation state and operating model of CodingAI.
@@ -11,7 +11,9 @@ This folder documents the current implementation state and operating model of Co
 2. `operations-runbook.md` for install/run/troubleshooting and revalidation checks.
 3. `agent-architecture-current.md` for module and control-flow map.
 4. `installation.md` for fresh Debian CLI install steps.
-5. `roadmap.md` for phase progression (1–21 implemented; 22+ planned).
+5. `roadmap.md` for phase progression (implemented + partial + pending phases).
+6. `implementation-plan.md` for open roadmap gaps and concrete implementation steps.
+7. `versioning-policy.md` for global docs versioning rules (optional for CodingAI, enforceable per workflow).
 
 ## Validation snapshot
 
@@ -34,3 +36,5 @@ This docs refresh is based on live checks run against current code:
 - `phase9-web-ui-mvp.md`: dashboard usage and controls.
 - `phase12-advanced-autonomy.md`: strategy-memory autonomy and staged test-patch fallback.
 - `roadmap.md`: phases 1–21 (current and future, includes governance/observability).
+- `implementation-plan.md`: actionable plan for features not fully implemented yet.
+- `versioning-policy.md`: versioning scheme (`x1.x2.x3`) and bump criteria.

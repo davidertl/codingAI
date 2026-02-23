@@ -52,6 +52,54 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+def refresh_runtime_config_from_env():
+    global LLM_PROVIDER
+    global LLM_PROVIDER_ORDER
+    global LLM_FALLBACK_ENABLED
+    global LLM_HEALTHCHECK_ENABLED
+    global LLM_REQUIRE_HEALTHY
+    global LLM_HEALTHCHECK_TIMEOUT_SECONDS
+    global LLM_HEALTHCHECK_CACHE_SECONDS
+    global LLM_TELEMETRY_FILE
+    global LLM_TELEMETRY_ENABLED
+    global OPENAI_API_KEY
+    global OPENAI_BASE_URL
+    global LOCAL_LLM_BASE_URL
+    global LOCAL_LLM_API_KEY
+    global LOCAL_LLM_API_MODE
+    global LOCAL_LLM_MODEL
+    global LOCAL_LLM_TEMPERATURE
+    global _ACTIVE_PROVIDER
+    global _LAST_READY_RESULT
+    global _LAST_READY_CHECK_AT
+
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    LLM_PROVIDER_ORDER = os.getenv("LLM_PROVIDER_ORDER", "local,openai").strip()
+    LLM_FALLBACK_ENABLED = os.getenv("LLM_FALLBACK_ENABLED", "true").strip().lower() in _TRUTHY
+    LLM_HEALTHCHECK_ENABLED = os.getenv("LLM_HEALTHCHECK_ENABLED", "true").strip().lower() in _TRUTHY
+    LLM_REQUIRE_HEALTHY = os.getenv("LLM_REQUIRE_HEALTHY", "true").strip().lower() in _TRUTHY
+    LLM_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("LLM_HEALTHCHECK_TIMEOUT_SECONDS", "2.5"))
+    LLM_HEALTHCHECK_CACHE_SECONDS = int(os.getenv("LLM_HEALTHCHECK_CACHE_SECONDS", "45"))
+    LLM_TELEMETRY_FILE = os.getenv(
+        "LLM_TELEMETRY_FILE",
+        str((LOGS_DIR / "llm_telemetry.jsonl").resolve()),
+    ).strip()
+    LLM_TELEMETRY_ENABLED = os.getenv("LLM_TELEMETRY_ENABLED", "true").strip().lower() in _TRUTHY
+
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com").strip()
+
+    LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434").strip()
+    LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "").strip()
+    LOCAL_LLM_API_MODE = os.getenv("LOCAL_LLM_API_MODE", "chat").strip().lower()
+    LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "").strip()
+    LOCAL_LLM_TEMPERATURE = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0.1"))
+
+    _ACTIVE_PROVIDER = None
+    _LAST_READY_RESULT = None
+    _LAST_READY_CHECK_AT = 0.0
+
+
 def _normalize_provider(name: str) -> str | None:
     n = (name or "").strip().lower()
     if n in _VALID_PROVIDERS:

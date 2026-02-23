@@ -40,10 +40,24 @@ GITHUB_APP_PEM_FILE = (
 
 def setup_status() -> dict:
     """Return whether core setup inputs exist (env IDs + pem file)."""
+    env_vars = {}
+    # Read current values from .env first so setup UI updates immediately after save.
+    if ENV_FILE.exists():
+        with open(ENV_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                env_vars[k.strip()] = v.strip()
+
+    # Keep process env as fallback/override for runtime-injected values.
     env_vars = {
-        "GITHUB_OWNER": os.getenv("GITHUB_OWNER", "").strip(),
-        "GITHUB_APP_ID": os.getenv("GITHUB_APP_ID", "").strip(),
-        "GITHUB_INSTALLATION_ID": os.getenv("GITHUB_INSTALLATION_ID", "").strip(),
+        "GITHUB_OWNER": os.getenv("GITHUB_OWNER", env_vars.get("GITHUB_OWNER", "")).strip(),
+        "GITHUB_APP_ID": os.getenv("GITHUB_APP_ID", env_vars.get("GITHUB_APP_ID", "")).strip(),
+        "GITHUB_INSTALLATION_ID": os.getenv(
+            "GITHUB_INSTALLATION_ID", env_vars.get("GITHUB_INSTALLATION_ID", "")
+        ).strip(),
     }
     pem_exists = GITHUB_APP_PEM_FILE.exists()
     return {
