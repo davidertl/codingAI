@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import time
+import re
 from pathlib import Path
 
 from paths import AI_AGENT_DIR
@@ -10,7 +11,9 @@ from paths import AI_AGENT_DIR
 _DB_RAW = os.getenv("CODINGAI_DB_FILE", "").strip()
 DB_FILE = Path(_DB_RAW).expanduser().resolve() if _DB_RAW else (AI_AGENT_DIR / "state.db").resolve()
 _LOCK = threading.Lock()
-_VALID_PUSH_GATES = {"auto_10s", "manual"}
+_AUTO_PUSH_GATE_PATTERN = re.compile(r"^auto_(\d{1,6})s$")
+_MIN_AUTO_GATE_SECONDS = 1
+_MAX_AUTO_GATE_SECONDS = 86400
 
 
 def db_path() -> str:
@@ -44,8 +47,16 @@ def init_db():
 
 def _normalize_push_gate_mode(mode: str | None, *, default: str = "auto_10s") -> str:
     raw = str(mode or "").strip().lower()
-    if raw in _VALID_PUSH_GATES:
-        return raw
+    if raw == "manual":
+        return "manual"
+    m = _AUTO_PUSH_GATE_PATTERN.match(raw)
+    if m:
+        try:
+            seconds = int(m.group(1))
+        except ValueError:
+            seconds = 10
+        seconds = max(_MIN_AUTO_GATE_SECONDS, min(_MAX_AUTO_GATE_SECONDS, seconds))
+        return f"auto_{seconds}s"
     return default
 
 
@@ -220,4 +231,3 @@ def get_project_push_gate_mode(repo: str, *, default: str = "auto_10s") -> str:
     if not row:
         return _normalize_push_gate_mode(default)
     return _normalize_push_gate_mode(row["push_gate_mode"], default=default)
-

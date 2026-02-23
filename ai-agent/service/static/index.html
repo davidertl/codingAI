@@ -154,6 +154,45 @@
 
     .kpi .k { color: var(--muted); font-size: 0.75rem; }
     .kpi .v { margin-top: 6px; font-size: 0.95rem; font-weight: 700; }
+    .kpi.time {
+      background:
+        linear-gradient(150deg, rgba(82, 199, 209, 0.14), rgba(18, 33, 38, 0.94));
+      border-color: rgba(126, 181, 178, 0.35);
+    }
+    .kpi .kline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .tz-gear {
+      width: 24px;
+      height: 24px;
+      min-width: 24px;
+      border-radius: 999px;
+      padding: 0;
+      font-size: 0.8rem;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(13, 28, 34, 0.95);
+      border-color: rgba(126, 181, 178, 0.4);
+    }
+    .server-time-main {
+      margin-top: 6px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 1.16rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #dff6f3;
+    }
+    .server-time-sub {
+      margin-top: 5px;
+      font-size: 0.69rem;
+      line-height: 1.35;
+      color: #9cc7c2;
+    }
 
     .repo {
       border: 1px solid var(--line);
@@ -479,9 +518,13 @@
           <div class="k">Provider</div>
           <div class="v" id="providerName">-</div>
         </div>
-        <div class="kpi">
-          <div class="k">Server Time</div>
-          <div class="v mono" id="serverTime">-</div>
+        <div class="kpi time">
+          <div class="kline">
+            <div class="k">Server Time</div>
+            <button id="serverTimeTzBtn" class="tz-gear" type="button" title="Set timezone">&#9881;</button>
+          </div>
+          <div class="server-time-main" id="serverTimeMain">--:--:--</div>
+          <div class="server-time-sub mono" id="serverTimeSub">-</div>
         </div>
       </div>
       <div id="sidebarHandle" title="Drag to resize"></div>
@@ -496,7 +539,6 @@
         </div>
         <div class="box-body">
           <div id="projectsList"></div>
-          <div class="stack" id="repoList"></div>
         </div>
       </section>
 
@@ -731,6 +773,12 @@
       projects: [],
       workers: [],
       projectsSource: "unknown",
+      timezone: "local",
+      lastEditAt: 0,
+      lastProjectsError: "",
+      liveSocket: null,
+      liveReconnectTimer: null,
+      wsConnected: false,
       rules: {
         global: null,
         project: null,
@@ -745,11 +793,12 @@
       sidebarHandle: document.getElementById("sidebarHandle"),
       sidebarCollapseBtn: document.getElementById("sidebarCollapseBtn"),
       sidebarReopenBtn: document.getElementById("sidebarReopenBtn"),
-      repoList: document.getElementById("repoList"),
       llmStatus: document.getElementById("llmStatus"),
       workersCount: document.getElementById("workersCount"),
       providerName: document.getElementById("providerName"),
-      serverTime: document.getElementById("serverTime"),
+      serverTimeMain: document.getElementById("serverTimeMain"),
+      serverTimeSub: document.getElementById("serverTimeSub"),
+      serverTimeTzBtn: document.getElementById("serverTimeTzBtn"),
       selectedRepoTitle: document.getElementById("selectedRepoTitle"),
       workerMeta: document.getElementById("workerMeta"),
       queueMeta: document.getElementById("queueMeta"),
@@ -833,6 +882,8 @@
     const SIDEBAR_HIDDEN_KEY = "codingai.ui.sidebar.hidden";
     const SECTION_COLLAPSE_KEY = "codingai.ui.sidebar.sections";
     const SETTINGS_TAB_KEY = "codingai.ui.settings.tab";
+    const TIMEZONE_KEY = "codingai.ui.timezone";
+    const LIVE_WS_RECONNECT_MS = 2200;
 
     async function fetchJson(path, opts = {}) {
       const res = await fetch(path, opts);
@@ -841,6 +892,26 @@
         throw new Error(`${res.status} ${res.statusText}: ${text.slice(0, 260)}`);
       }
       return res.json();
+    }
+
+    function liveSocketUrl() {
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      return `${proto}://${window.location.host}/ws/live`;
+    }
+
+    function sendLiveMessage(payload) {
+      if (!state.liveSocket || state.liveSocket.readyState !== WebSocket.OPEN) return false;
+      try {
+        state.liveSocket.send(JSON.stringify(payload));
+        return true;
+      } catch (_e) {
+        return false;
+      }
+    }
+
+    function sendLiveRepoSelection() {
+      if (!state.selectedRepo) return;
+      sendLiveMessage({ type: "set_repo", repo: state.selectedRepo });
     }
 
     function escapeHtml(text) {
@@ -873,6 +944,80 @@
       showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
     }
 
+    function rememberProjectsError(message) {
+      const text = String(message || "").trim();
+      if (!text) {
+        state.lastProjectsError = "";
+        return;
+      }
+      if (state.lastProjectsError !== text) {
+        state.lastProjectsError = text;
+        showToast(`projects fallback: ${text}`, true);
+      }
+    }
+
+    function isEditableTarget(target) {
+      if (!target || !(target instanceof Element)) return false;
+      const tag = String(target.tagName || "").toUpperCase();
+      if (target.isContentEditable) return true;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (typeof target.closest === "function" && target.closest("[contenteditable='true']")) return true;
+      return false;
+    }
+
+    function normalizeTimezoneInput(input) {
+      const raw = String(input || "").trim();
+      if (!raw || raw.toLowerCase() === "local" || raw.toLowerCase() === "system") {
+        return { ok: true, value: "local", label: "Browser Local Time" };
+      }
+      const value = raw.toUpperCase() === "UTC" ? "UTC" : raw;
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
+      } catch (_e) {
+        return { ok: false, value: "local", label: "" };
+      }
+      return { ok: true, value, label: value };
+    }
+
+    function effectiveTimezone() {
+      if (state.timezone && state.timezone !== "local") return state.timezone;
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    }
+
+    function formatServerTime(utcIso) {
+      const src = String(utcIso || "").trim();
+      if (!src) {
+        return { main: "--:--:--", sub: "No timestamp", zone: "-" };
+      }
+      const dt = new Date(src);
+      if (Number.isNaN(dt.getTime())) {
+        return { main: src, sub: "Invalid timestamp", zone: "-" };
+      }
+      const zone = effectiveTimezone();
+      const main = new Intl.DateTimeFormat("en-GB", {
+        timeZone: zone,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(dt);
+      const datePart = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        weekday: "short",
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      }).format(dt);
+      const zonePart = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        timeZoneName: "short",
+      })
+        .formatToParts(dt)
+        .find((p) => p.type === "timeZoneName")?.value || zone;
+      const sourcePart = src.endsWith("Z") ? "source: UTC" : "source: server";
+      return { main, sub: `${datePart} • ${zonePart} • ${sourcePart}`, zone };
+    }
+
     function openNotesEditor() {
       const editor = document.getElementById("notesEditor");
       if (!editor) return;
@@ -901,6 +1046,18 @@
     function setSidebarHidden(hidden) {
       document.body.classList.toggle("sidebar-hidden", !!hidden);
       storage.set(SIDEBAR_HIDDEN_KEY, !!hidden);
+    }
+
+    function renderSummaryFromState() {
+      if (!state.selectedRepo) {
+        el.selectedRepoTitle.textContent = "repo: -";
+        el.queueWrap.innerHTML = `<div class="msg">No open ai-fix issues in queue.</div>`;
+        el.trackedWrap.innerHTML = `<div class="msg">No tracked issue state yet for this repository.</div>`;
+        return;
+      }
+      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
+      renderQueue(state.summary || {});
+      renderTracked(state.summary || {});
     }
 
     function setSettingsTab(tabId) {
@@ -976,35 +1133,17 @@
       return state.repos.find((r) => r.repo === repo);
     }
 
-    function renderRepos() {
-      const rows = state.repos.map((item) => {
-        const active = item.repo === state.selectedRepo ? "repo active" : "repo";
-        const running = item.running ? "chip ok" : "chip";
-        return `
-          <article class="${active}" data-repo="${escapeHtml(item.repo)}">
-            <div class="name">
-              <span>${escapeHtml(item.repo)}</span>
-              <span class="${running}">${item.running ? "worker:on" : "worker:off"}</span>
-              ${item.automation ? '<span class="chip ok">auto</span>' : '<span class="chip warn">manual</span>'}
-            </div>
-            <div class="row">
-              <button data-action="select" data-repo="${escapeHtml(item.repo)}">Select</button>
-              <button data-action="start" data-repo="${escapeHtml(item.repo)}">Start</button>
-              <button data-action="stop" data-repo="${escapeHtml(item.repo)}">Stop</button>
-              <button data-action="auto-toggle" data-repo="${escapeHtml(item.repo)}">${item.automation ? "Disable Auto" : "Enable Auto"}</button>
-            </div>
-          </article>
-        `;
-      }).join("");
-      el.repoList.innerHTML = rows || `<div class="msg">No repositories configured.</div>`;
-    }
-
     function renderHeader() {
       const h = state.health || {};
       el.llmStatus.textContent = h.llm_ready ? "READY" : "NOT READY";
       el.llmStatus.style.color = h.llm_ready ? "var(--ok)" : "var(--bad)";
       el.providerName.textContent = h.llm_active_provider || "-";
-      el.serverTime.textContent = h.time_utc || "-";
+      const formatted = formatServerTime(h.time_utc || "");
+      el.serverTimeMain.textContent = formatted.main;
+      el.serverTimeSub.textContent = formatted.sub;
+      if (el.serverTimeTzBtn) {
+        el.serverTimeTzBtn.title = `Set timezone (current: ${formatted.zone})`;
+      }
       el.workersCount.textContent = String(h.workers_running ?? 0);
     }
 
@@ -1094,29 +1233,160 @@
       }
       el.projectsList.innerHTML = items
         .map((p) => {
+          const runtime = itemByRepo(p.repo) || {};
+          const active = p.repo === state.selectedRepo ? "repo active" : "repo";
+          const running = runtime.running ? "chip ok" : "chip";
+          const auto = runtime.automation ? "chip ok" : "chip warn";
           const cls = p.enabled ? "chip ok" : "chip";
           const action = p.enabled ? "disable" : "enable";
           const label = p.enabled ? "Disable" : "Enable";
           const gate = p.push_gate_mode || "auto_10s";
+          const gateMatch = /^auto_(\d+)s$/i.exec(gate);
+          const gateIsAuto = !!gateMatch;
+          const gateSeconds = gateMatch ? Number(gateMatch[1]) : 10;
+          const gateChip = gateIsAuto ? `gate:auto_${gateSeconds}s` : "gate:manual";
           return `
-            <article class="repo">
+            <article class="${active}">
               <div class="name">
                 <span>${escapeHtml(p.repo)}</span>
+                <span class="${running}">${runtime.running ? "worker:on" : "worker:off"}</span>
+                <span class="${auto}">${runtime.automation ? "auto" : "manual"}</span>
                 <span class="${cls}">${p.enabled ? "enabled" : "disabled"}</span>
-                <span class="chip">${gate === "manual" ? "gate:manual" : "gate:auto_10s"}</span>
+                <span class="chip">${escapeHtml(gateChip)}</span>
+              </div>
+              <div class="row">
+                <button data-project="${escapeHtml(p.repo)}" data-action="select">Select</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="start">Start</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="stop">Stop</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="auto-toggle">${runtime.automation ? "Disable Auto" : "Enable Auto"}</button>
               </div>
               <div class="row">
                 <button data-project="${escapeHtml(p.repo)}" data-action="${action}">${label}</button>
-                <select data-project-gate="${escapeHtml(p.repo)}">
-                  <option value="auto_10s" ${gate === "auto_10s" ? "selected" : ""}>Auto 10s</option>
-                  <option value="manual" ${gate === "manual" ? "selected" : ""}>Manual</option>
-                </select>
+                <label class="mono" style="display:inline-flex;align-items:center;gap:6px;">
+                  <input type="checkbox" data-project-gate-auto="${escapeHtml(p.repo)}" ${gateIsAuto ? "checked" : ""}>
+                  Auto
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="86400"
+                  step="1"
+                  data-project-gate-seconds="${escapeHtml(p.repo)}"
+                  value="${gateSeconds}"
+                  ${gateIsAuto ? "" : "disabled"}
+                  style="width:92px;"
+                >
+                <span class="mono">sec</span>
                 <button data-project="${escapeHtml(p.repo)}" data-action="set-gate">Save Gate</button>
               </div>
             </article>
           `;
         })
         .join("");
+
+      el.projectsList.querySelectorAll("input[data-project-gate-auto]").forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          const repo = checkbox.getAttribute("data-project-gate-auto");
+          if (!repo) return;
+          const secondsInput = el.projectsList.querySelector(`input[data-project-gate-seconds='${cssEscape(repo)}']`);
+          if (!secondsInput) return;
+          secondsInput.disabled = !checkbox.checked;
+        });
+      });
+    }
+
+    function applyLiveSnapshot(payload) {
+      if (!payload || typeof payload !== "object") return;
+      if (payload.health && typeof payload.health === "object") state.health = payload.health;
+      if (Array.isArray(payload.repos)) state.repos = payload.repos;
+
+      if (Object.prototype.hasOwnProperty.call(payload, "selected_repo")) {
+        state.selectedRepo = payload.selected_repo ? String(payload.selected_repo) : null;
+      } else if (!state.selectedRepo && state.repos.length) {
+        state.selectedRepo = state.repos[0].repo;
+      }
+
+      if (payload.summary && typeof payload.summary === "object") state.summary = payload.summary;
+      if (payload.setup_status && typeof payload.setup_status === "object") state.setup = payload.setup_status;
+      if (payload.setup_values && typeof payload.setup_values === "object") state.setupValues = payload.setup_values;
+
+      const projectsPayload = payload.projects && typeof payload.projects === "object" ? payload.projects : null;
+      if (projectsPayload) {
+        state.projects = Array.isArray(projectsPayload.projects) ? projectsPayload.projects : [];
+        state.projectsSource = String(projectsPayload.source || "unknown");
+        rememberProjectsError(projectsPayload.error || "");
+      }
+
+      const workersPayload = payload.workers && typeof payload.workers === "object" ? payload.workers : null;
+      if (workersPayload) {
+        state.workers = Array.isArray(workersPayload.workers) ? workersPayload.workers : [];
+      }
+
+      const rulesPayload = payload.rules && typeof payload.rules === "object" ? payload.rules : null;
+      if (rulesPayload) {
+        state.rules.global = normalizeRuleResponse(rulesPayload.global || {});
+        state.rules.project = rulesPayload.project ? normalizeRuleResponse(rulesPayload.project) : null;
+        state.rules.worker = rulesPayload.worker ? normalizeRuleResponse(rulesPayload.worker) : null;
+        state.rules.effective = {
+          text: String((rulesPayload.effective && rulesPayload.effective.text) || ""),
+          sources: Array.isArray(rulesPayload.effective?.sources) ? rulesPayload.effective.sources : [],
+        };
+      }
+
+      applySetupValues(state.setupValues || {});
+      renderHeader();
+      renderProjects();
+      renderWorkersSettings();
+      renderSummaryFromState();
+      renderRules();
+    }
+
+    function connectLiveSocket() {
+      if (state.liveSocket && (state.liveSocket.readyState === WebSocket.OPEN || state.liveSocket.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      const ws = new WebSocket(liveSocketUrl());
+      state.liveSocket = ws;
+
+      ws.onopen = () => {
+        state.wsConnected = true;
+        if (state.liveReconnectTimer) {
+          clearTimeout(state.liveReconnectTimer);
+          state.liveReconnectTimer = null;
+        }
+        sendLiveRepoSelection();
+      };
+
+      ws.onmessage = (ev) => {
+        let msg = null;
+        try {
+          msg = JSON.parse(String(ev.data || ""));
+        } catch (_e) {
+          return;
+        }
+        const type = String(msg?.type || "");
+        if (type === "hello" || type === "pong") return;
+        if (type === "error") {
+          showToast(`live update error: ${msg.error || "unknown"}`, true);
+          return;
+        }
+        if (type === "snapshot") {
+          applyLiveSnapshot(msg);
+        }
+      };
+
+      ws.onclose = () => {
+        state.wsConnected = false;
+        state.liveSocket = null;
+        if (!state.liveReconnectTimer) {
+          state.liveReconnectTimer = setTimeout(() => {
+            state.liveReconnectTimer = null;
+            connectLiveSocket();
+          }, LIVE_WS_RECONNECT_MS);
+        }
+      };
+
+      ws.onerror = () => {};
     }
 
     function renderQueue(summary) {
@@ -1310,6 +1580,7 @@
     }
 
     async function refreshCore() {
+      const previousSelected = state.selectedRepo;
       const [health, repos] = await Promise.all([fetchJson("/health"), fetchJson("/repos")]);
       state.health = health;
       state.repos = repos;
@@ -1317,8 +1588,8 @@
         state.selectedRepo = repos.length ? repos[0].repo : null;
       }
       if (!state.selectedRepo && repos.length) state.selectedRepo = repos[0].repo;
+      if (previousSelected !== state.selectedRepo) sendLiveRepoSelection();
       renderHeader();
-      renderRepos();
     }
 
     async function refreshSetup() {
@@ -1339,22 +1610,18 @@
       const data = await fetchJson("/projects");
       state.projects = data.projects || [];
       state.projectsSource = data.source || "unknown";
-      if (data.error) {
-        showToast(`projects fallback: ${data.error}`, true);
-      }
+      rememberProjectsError(data.error || "");
       renderProjects();
     }
 
     async function refreshSummary() {
       if (!state.selectedRepo) {
-        el.selectedRepoTitle.textContent = "repo: -";
+        renderSummaryFromState();
         return;
       }
-      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
       const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
       state.summary = summary;
-      renderQueue(summary);
-      renderTracked(summary);
+      renderSummaryFromState();
     }
 
     async function refreshRules() {
@@ -1430,25 +1697,35 @@
       el.btnCloseNotesEditor.addEventListener("click", closeNotesEditor);
     }
 
-    el.repoList.addEventListener("click", async (ev) => {
-      const btn = ev.target.closest("button");
-      if (!btn) return;
-      const repo = btn.dataset.repo;
-      const action = btn.dataset.action;
-      if (!repo || !action) return;
-      const repoItem = itemByRepo(repo);
-      if (action === "select") {
-        state.selectedRepo = repo;
-        await refreshAll();
-        return;
-      }
-      if (action === "start") return callAction(`/run/repo/${encodeURIComponent(repo)}`, `worker started for ${repo}`);
-      if (action === "stop") return callAction(`/stop/repo/${encodeURIComponent(repo)}`, `worker stopped for ${repo}`);
-      if (action === "auto-toggle") {
-        const endpoint = repoItem?.automation ? "disable" : "enable";
-        return callAction(`/automation/${encodeURIComponent(repo)}/${endpoint}`, `automation ${endpoint}d for ${repo}`);
-      }
-    });
+    if (el.serverTimeTzBtn) {
+      el.serverTimeTzBtn.addEventListener("click", () => {
+        const current = state.timezone || "local";
+        const input = window.prompt(
+          "Timezone (IANA), e.g. America/New_York, Europe/Berlin, UTC, or local:",
+          current,
+        );
+        if (input === null) return;
+        const normalized = normalizeTimezoneInput(input);
+        if (!normalized.ok) {
+          showToast("Invalid timezone. Use an IANA value like America/New_York or UTC.", true);
+          return;
+        }
+        state.timezone = normalized.value;
+        storage.set(TIMEZONE_KEY, state.timezone);
+        renderHeader();
+        showToast(`Timezone set: ${normalized.label}`);
+      });
+    }
+
+    document.addEventListener("input", (ev) => {
+      if (isEditableTarget(ev.target)) state.lastEditAt = Date.now();
+    }, true);
+    document.addEventListener("keydown", (ev) => {
+      if (isEditableTarget(ev.target)) state.lastEditAt = Date.now();
+    }, true);
+    document.addEventListener("paste", (ev) => {
+      if (isEditableTarget(ev.target)) state.lastEditAt = Date.now();
+    }, true);
 
     el.btnRunOnce.addEventListener("click", () => {
       if (!state.selectedRepo) return;
@@ -1570,9 +1847,33 @@
       const action = btn.dataset.action;
       if (!repo || !action) return;
       try {
+        const repoItem = itemByRepo(repo);
+        if (action === "select") {
+          state.selectedRepo = repo;
+          sendLiveRepoSelection();
+          await refreshAll();
+          return;
+        }
+        if (action === "start") return callAction(`/run/repo/${encodeURIComponent(repo)}`, `worker started for ${repo}`);
+        if (action === "stop") return callAction(`/stop/repo/${encodeURIComponent(repo)}`, `worker stopped for ${repo}`);
+        if (action === "auto-toggle") {
+          const endpoint = repoItem?.automation ? "disable" : "enable";
+          return callAction(`/automation/${encodeURIComponent(repo)}/${endpoint}`, `automation ${endpoint}d for ${repo}`);
+        }
         if (action === "set-gate") {
-          const sel = document.querySelector(`select[data-project-gate='${cssEscape(repo)}']`);
-          const mode = sel?.value || "auto_10s";
+          const autoCheckbox = el.projectsList.querySelector(`input[data-project-gate-auto='${cssEscape(repo)}']`);
+          const secondsInput = el.projectsList.querySelector(`input[data-project-gate-seconds='${cssEscape(repo)}']`);
+          const autoEnabled = !!autoCheckbox?.checked;
+          let mode = "manual";
+          if (autoEnabled) {
+            const rawSeconds = Number(secondsInput?.value || 10);
+            if (!Number.isFinite(rawSeconds) || rawSeconds < 1 || rawSeconds > 86400) {
+              showToast("Gate seconds must be an integer between 1 and 86400.", true);
+              return;
+            }
+            const seconds = Math.trunc(rawSeconds);
+            mode = `auto_${seconds}s`;
+          }
           await fetchJson(`/projects/${encodeURIComponent(repo)}/push-gate?mode=${encodeURIComponent(mode)}`, { method: "POST" });
           showToast(`project gate set: ${repo} -> ${mode}`);
         } else {
@@ -1653,8 +1954,10 @@
 
     async function boot() {
       initSidebarChrome();
+      const savedTimezone = normalizeTimezoneInput(storage.get(TIMEZONE_KEY, "local"));
+      state.timezone = savedTimezone.ok ? savedTimezone.value : "local";
       await refreshAll();
-      state.refreshTimer = setInterval(refreshAll, 7000);
+      connectLiveSocket();
     }
 
     boot();
