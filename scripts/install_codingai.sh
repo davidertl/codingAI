@@ -15,7 +15,8 @@ PRIMARY_VENV_DIR="$AI_AGENT_DIR/venv"
 FALLBACK_VENV_DIR="$AI_AGENT_DIR/venv_user"
 VENV_DIR="${VENV_DIR:-$PRIMARY_VENV_DIR}"
 ENV_FILE="$AI_AGENT_DIR/.env"
-PEM_TARGET="$AI_AGENT_DIR/github_app/KRT-AI-Agent.pem"
+PEM_TARGET="$AI_AGENT_DIR/github_app/github-app.pem"
+PEM_LEGACY_TARGET="$AI_AGENT_DIR/github_app/KRT-AI-Agent.pem"
 
 if [[ ! -d "$AI_AGENT_DIR" ]]; then
   echo "Expected ai-agent directory at: $AI_AGENT_DIR" >&2
@@ -91,6 +92,12 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$AI_AGENT_DIR/logs" "$REPO_ROOT/workspaces" "$AI_AGENT_DIR/github_app"
+
+if [[ ! -f "$PEM_TARGET" ]] && [[ -f "$PEM_LEGACY_TARGET" ]]; then
+  echo "Migrating legacy GitHub App PEM filename to: $PEM_TARGET"
+  cp "$PEM_LEGACY_TARGET" "$PEM_TARGET"
+  chmod 600 "$PEM_TARGET" || true
+fi
 
 install_node20
 

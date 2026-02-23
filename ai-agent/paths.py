@@ -31,11 +31,20 @@ _env_raw = os.getenv("CODINGAI_ENV_FILE", "").strip()
 ENV_FILE = Path(_env_raw).expanduser().resolve() if _env_raw else (AI_AGENT_DIR / ".env").resolve()
 
 _pem_raw = os.getenv("GITHUB_APP_PEM", "").strip()
-GITHUB_APP_PEM_FILE = (
-    Path(_pem_raw).expanduser().resolve()
-    if _pem_raw
-    else (AI_AGENT_DIR / "github_app" / "KRT-AI-Agent.pem").resolve()
-)
+_PEM_DIR = (AI_AGENT_DIR / "github_app").resolve()
+_PEM_CANONICAL = (_PEM_DIR / "github-app.pem").resolve()
+_PEM_LEGACY = (_PEM_DIR / "KRT-AI-Agent.pem").resolve()
+
+
+def _resolve_pem_path() -> Path:
+    if _pem_raw:
+        return Path(_pem_raw).expanduser().resolve()
+    if _PEM_CANONICAL.exists() or not _PEM_LEGACY.exists():
+        return _PEM_CANONICAL
+    return _PEM_LEGACY
+
+
+GITHUB_APP_PEM_FILE = _resolve_pem_path()
 
 
 def setup_status() -> dict:
