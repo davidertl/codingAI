@@ -33,15 +33,18 @@ ENV_FILE = Path(_env_raw).expanduser().resolve() if _env_raw else (AI_AGENT_DIR 
 _pem_raw = os.getenv("GITHUB_APP_PEM", "").strip()
 _PEM_DIR = (AI_AGENT_DIR / "github_app").resolve()
 _PEM_CANONICAL = (_PEM_DIR / "github-app.pem").resolve()
-_PEM_LEGACY = (_PEM_DIR / "KRT-AI-Agent.pem").resolve()
 
 
 def _resolve_pem_path() -> Path:
     if _pem_raw:
         return Path(_pem_raw).expanduser().resolve()
-    if _PEM_CANONICAL.exists() or not _PEM_LEGACY.exists():
+    if _PEM_CANONICAL.exists():
         return _PEM_CANONICAL
-    return _PEM_LEGACY
+    if _PEM_DIR.exists():
+        candidates = sorted(_PEM_DIR.glob("*.pem"))
+        if candidates:
+            return candidates[0].resolve()
+    return _PEM_CANONICAL
 
 
 GITHUB_APP_PEM_FILE = _resolve_pem_path()
