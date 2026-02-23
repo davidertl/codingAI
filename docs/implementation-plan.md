@@ -15,7 +15,7 @@ This plan tracks roadmap features that are documented but missing/partial on `lo
   - `GET /orchestration/runs`
   - `GET /orchestration/runs/{run_id}`
   - `GET /orchestration/runs/{run_id}/artifacts`
-- `ORCHESTRATOR_V2_ENABLED` currently enables a V2 preflight gate before the legacy patch/test/push pipeline.
+- `ORCHESTRATOR_V2_ENABLED` currently enables a V2 preflight gate before the current patch/test/push pipeline.
 
 ## Docs provenance (what introduced the missing features)
 

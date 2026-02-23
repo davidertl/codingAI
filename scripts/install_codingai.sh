@@ -92,10 +92,10 @@ fi
 
 mkdir -p "$AI_AGENT_DIR/logs" "$REPO_ROOT/workspaces" "$AI_AGENT_DIR/github_app"
 
-LEGACY_PEM_CANDIDATE="$(find "$AI_AGENT_DIR/github_app" -maxdepth 1 -type f -name '*.pem' ! -name "$(basename "$PEM_TARGET")" | head -n 1 || true)"
-if [[ ! -f "$PEM_TARGET" ]] && [[ -n "$LEGACY_PEM_CANDIDATE" ]]; then
+EXISTING_PEM_CANDIDATE="$(find "$AI_AGENT_DIR/github_app" -maxdepth 1 -type f -name '*.pem' ! -name "$(basename "$PEM_TARGET")" | head -n 1 || true)"
+if [[ ! -f "$PEM_TARGET" ]] && [[ -n "$EXISTING_PEM_CANDIDATE" ]]; then
   echo "Migrating existing PEM key to canonical filename: $PEM_TARGET"
-  cp "$LEGACY_PEM_CANDIDATE" "$PEM_TARGET"
+  cp "$EXISTING_PEM_CANDIDATE" "$PEM_TARGET"
   chmod 600 "$PEM_TARGET" || true
 fi
 
