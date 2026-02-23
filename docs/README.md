@@ -34,7 +34,7 @@ This docs refresh is based on live checks run against current code:
 - `local-llm-setup.md`: local model setup, fallback behavior, and telemetry controls.
 - `phase8-api-control-plane.md`: FastAPI control plane endpoints and examples.
 - `phase9-web-ui-mvp.md`: dashboard usage and controls.
-- `phase12-advanced-autonomy.md`: strategy-memory autonomy and staged test-patch fallback.
+- `autonomy-improvements.md`: strategy-memory autonomy and staged test-patch fallback.
 - `roadmap.md`: phases 1–21 (current and future, includes governance/observability).
 - `implementation-plan.md`: actionable plan for features not fully implemented yet.
 - `versioning-policy.md`: versioning scheme (`x1.x2.x3`) and bump criteria.

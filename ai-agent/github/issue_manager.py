@@ -44,3 +44,50 @@ def create_issue(repo, title, body):
     r = requests.post(url, headers=_headers(), json=data)
     r.raise_for_status()
     return r.json()
+
+
+def list_issue_comments(repo, issue_number, per_page=100):
+    owner = get_github_owner()
+    if not owner:
+        raise RuntimeError("GITHUB_OWNER is not configured")
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
+    r = requests.get(url, headers=_headers(), params={"per_page": per_page})
+    r.raise_for_status()
+    return r.json()
+
+
+def upsert_issue_comment(repo, issue_number, body, marker="<!-- codingai-failure-report -->"):
+    owner = get_github_owner()
+    if not owner:
+        raise RuntimeError("GITHUB_OWNER is not configured")
+    comments = list_issue_comments(repo, issue_number, per_page=100)
+
+    existing_comment = None
+    for comment in comments:
+        if marker in (comment.get("body") or ""):
+            existing_comment = comment
+            break
+
+    if existing_comment:
+        comment_id = existing_comment["id"]
+        update_url = f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}"
+        response = requests.patch(update_url, headers=_headers(), json={"body": body})
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "id": comment_id,
+            "updated": True,
+            "url": payload.get("html_url"),
+            "marker": marker,
+        }
+
+    create_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
+    response = requests.post(create_url, headers=_headers(), json={"body": body})
+    response.raise_for_status()
+    payload = response.json()
+    return {
+        "id": payload.get("id"),
+        "updated": False,
+        "url": payload.get("html_url"),
+        "marker": marker,
+    }

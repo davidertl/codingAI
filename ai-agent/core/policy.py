@@ -116,7 +116,15 @@ def _env_default_policy():
                 minimum=0,
                 maximum=31 * 24 * 60 * 60,
             ),
-            "publish_failure_issue": _as_bool(os.getenv("PUBLISH_FAILURE_ISSUE", "true"), default=True),
+            "publish_failure_comment": _as_bool(os.getenv("PUBLISH_FAILURE_COMMENT", "true"), default=True),
+            "publish_failure_subissue": _as_bool(os.getenv("PUBLISH_FAILURE_SUBISSUE", "false"), default=False),
+            "failure_subissue_threshold": _as_int(
+                os.getenv("FAILURE_SUBISSUE_THRESHOLD", "3"),
+                default=3,
+                minimum=1,
+                maximum=50,
+            ),
+            "publish_failure_issue": _as_bool(os.getenv("PUBLISH_FAILURE_ISSUE", "false"), default=False),
         },
         "approval": {
             "required": _as_bool(os.getenv("MANUAL_APPROVAL_REQUIRED", "false"), default=False),
@@ -223,7 +231,19 @@ def _normalize_policy(raw_policy):
         minimum=0,
         maximum=31 * 24 * 60 * 60,
     )
-    safety["publish_failure_issue"] = _as_bool(safety.get("publish_failure_issue"), default=True)
+    legacy_publish_issue = _as_bool(safety.get("publish_failure_issue"), default=False)
+    publish_failure_subissue = safety.get("publish_failure_subissue")
+    if publish_failure_subissue is None:
+        publish_failure_subissue = legacy_publish_issue
+    safety["publish_failure_subissue"] = _as_bool(publish_failure_subissue, default=False)
+    safety["publish_failure_comment"] = _as_bool(safety.get("publish_failure_comment"), default=True)
+    safety["failure_subissue_threshold"] = _as_int(
+        safety.get("failure_subissue_threshold", 3),
+        default=3,
+        minimum=1,
+        maximum=50,
+    )
+    safety["publish_failure_issue"] = legacy_publish_issue
 
     approval = merged.setdefault("approval", {})
     approval["required"] = _as_bool(approval.get("required"), default=False)

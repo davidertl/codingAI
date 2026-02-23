@@ -44,7 +44,7 @@ bash ~/scripts/install_codingai.sh
 ## Secrets & permissions (compose)
 
 - `.env` is bind-mounted into the container; keep it at `ai-agent/.env` (or set `CODINGAI_ENV_FILE`) with `chmod 600`.
-- GitHub App private key is stored under `ai-agent/github_app/` (default `KRT-AI-Agent.pem`) and bind-mounted; ensure the folder exists and `chmod 700 ai-agent/github_app && chmod 600 ai-agent/github_app/*.pem`.
+- GitHub App private key is stored under `ai-agent/github_app/` (default `github-app.pem`) and bind-mounted; ensure the folder exists and `chmod 700 ai-agent/github_app && chmod 600 ai-agent/github_app/*.pem`.
 - If you run Docker as non-root, keep ownership consistent so the container can read the files (same UID/GID as the host user running `docker compose`).
 
 ## Required manual step: GitHub App private key
@@ -53,12 +53,12 @@ The installer writes `ai-agent/.env` but cannot generate your GitHub App private
 
 Copy your `.pem` file to:
 
-- `ai-agent/github_app/KRT-AI-Agent.pem`
+- `ai-agent/github_app/github-app.pem`
 
 Then lock permissions:
 
 ```bash
-chmod 600 ai-agent/github_app/KRT-AI-Agent.pem
+chmod 600 ai-agent/github_app/github-app.pem
 ```
 
 ## Start the Web UI

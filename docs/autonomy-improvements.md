@@ -1,4 +1,4 @@
-# Phase 12: Advanced Autonomy
+# Autonomy Improvements
 Version: experimental-0.22.0
 
 ## Implemented capabilities

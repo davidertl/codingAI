@@ -16,7 +16,7 @@ This reflects verified code/runtime state for `ai-agent/` on branch `localstate`
 9. `Phase 9 - Web UI MVP`: Implemented
 10. `Phase 10 - Governance/safety expansion`: Implemented
 11. `Phase 11 - Observability + CI integration`: Implemented
-12. `Phase 12 - Advanced autonomy improvements`: Implemented
+12. `Advanced autonomy improvements`: Implemented
 13. `Phase 13 - Setup & installer`: Implemented
 14. `Phase 14 - Projects (repo discovery)`: Implemented
 15. `Phase 15 - Chat + Repo UX`: Pending

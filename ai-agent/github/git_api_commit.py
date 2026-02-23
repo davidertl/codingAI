@@ -19,11 +19,34 @@ def get_default_branch(repo):
 
 def get_branch_sha(repo, branch):
     owner = get_github_owner()
+    branch_name = str(branch or "").strip()
+    if not branch_name:
+        return None
     r = requests.get(
-        f"{API_BASE}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+        f"{API_BASE}/repos/{owner}/{repo}/git/ref/heads/{branch_name}",
         headers=_headers()
     )
-    if r.status_code == 404:
+    if r.status_code in {404, 409}:
+        # Fallback for branch names that may not resolve reliably via singular ref path.
+        m = requests.get(
+            f"{API_BASE}/repos/{owner}/{repo}/git/matching-refs/heads/{branch_name}",
+            headers=_headers()
+        )
+        if m.status_code in {404, 409}:
+            return None
+        m.raise_for_status()
+        payload = m.json()
+        refs = payload if isinstance(payload, list) else []
+        target_ref = f"refs/heads/{branch_name}"
+        for item in refs:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("ref") or "") != target_ref:
+                continue
+            obj = item.get("object", {}) if isinstance(item.get("object"), dict) else {}
+            sha = str(obj.get("sha") or "").strip()
+            if sha:
+                return sha
         return None
     r.raise_for_status()
     return r.json()["object"]["sha"]
@@ -145,8 +168,14 @@ def create_branch(repo, branch, base_sha):
             "sha": base_sha
         }
     )
-    if r.status_code != 201:
-        r.raise_for_status()
+    if r.status_code == 201:
+        return
+
+    if r.status_code in {409, 422}:
+        existing_sha = get_branch_sha(repo, branch)
+        if existing_sha:
+            return
+    r.raise_for_status()
 
 
 def create_or_update_branch(repo, branch, base_sha):
