@@ -16,7 +16,6 @@ FALLBACK_VENV_DIR="$AI_AGENT_DIR/venv_user"
 VENV_DIR="${VENV_DIR:-$PRIMARY_VENV_DIR}"
 ENV_FILE="$AI_AGENT_DIR/.env"
 PEM_TARGET="$AI_AGENT_DIR/github_app/github-app.pem"
-PEM_LEGACY_TARGET="$AI_AGENT_DIR/github_app/KRT-AI-Agent.pem"
 
 if [[ ! -d "$AI_AGENT_DIR" ]]; then
   echo "Expected ai-agent directory at: $AI_AGENT_DIR" >&2
@@ -93,9 +92,10 @@ fi
 
 mkdir -p "$AI_AGENT_DIR/logs" "$REPO_ROOT/workspaces" "$AI_AGENT_DIR/github_app"
 
-if [[ ! -f "$PEM_TARGET" ]] && [[ -f "$PEM_LEGACY_TARGET" ]]; then
-  echo "Migrating legacy GitHub App PEM filename to: $PEM_TARGET"
-  cp "$PEM_LEGACY_TARGET" "$PEM_TARGET"
+LEGACY_PEM_CANDIDATE="$(find "$AI_AGENT_DIR/github_app" -maxdepth 1 -type f -name '*.pem' ! -name "$(basename "$PEM_TARGET")" | head -n 1 || true)"
+if [[ ! -f "$PEM_TARGET" ]] && [[ -n "$LEGACY_PEM_CANDIDATE" ]]; then
+  echo "Migrating existing PEM key to canonical filename: $PEM_TARGET"
+  cp "$LEGACY_PEM_CANDIDATE" "$PEM_TARGET"
   chmod 600 "$PEM_TARGET" || true
 fi
 
