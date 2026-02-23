@@ -1,5 +1,5 @@
 # CodingAI Versioning Policy
-Version: experimental-0.21.0
+Version: experimental-0.21.1
 
 ## Scope
 
@@ -26,7 +26,7 @@ Format: `experimental-x1.x2.x3`
 ## Current baseline rule for this branch
 
 For the current correction set, `x1` is explicitly fixed to `0` and `x2` must be `>20`.
-The synchronized docs target is therefore `experimental-0.21.0`.
+The synchronized docs target is therefore `experimental-0.21.1`.
 
 ## Pre-push checklist
 
