@@ -283,6 +283,8 @@ def _repo_state_summary(repo: str) -> list[dict]:
                 "active_branch": value.get("active_branch"),
                 "last_error": value.get("last_error"),
                 "source_issue_updated_at": value.get("source_issue_updated_at"),
+                "manual_prompt": value.get("manual_prompt"),
+                "manual_prompt_updated_at": value.get("manual_prompt_updated_at"),
                 "last_duration_ms": value.get("last_duration_ms"),
                 "last_processed_at": value.get("last_processed_at"),
                 "ci_gate": value.get("ci_gate"),
@@ -510,6 +512,10 @@ class RulesPayload(BaseModel):
     rules_markdown: str = Field(default="", max_length=200000)
     attachment_ids: list[int] = Field(default_factory=list)
     snippet_attachments: list[SnippetAttachmentPayload] = Field(default_factory=list)
+
+
+class PromptRerunPayload(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=12000)
 
 
 def _normalize_chat_task_type(value: str | None) -> str:
@@ -1557,6 +1563,67 @@ def pipeline_resume(repo: str, issue_number: int):
 def pipeline_cancel(repo: str, issue_number: int, reason: str | None = None):
     _require_repo(repo)
     return _pipeline_control(repo, issue_number, action="cancel", reason=reason)
+
+
+@app.post("/pipeline/{repo}/{issue_number}/prompt-rerun")
+def pipeline_prompt_rerun(repo: str, issue_number: int, payload: PromptRerunPayload):
+    _require_repo(repo)
+    prompt = str(payload.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    state, issue_state = _get_issue_state_or_404(repo, issue_number)
+    now = int(time.time())
+    issue_state["manual_prompt"] = prompt
+    issue_state["manual_prompt_updated_at"] = now
+    issue_state["force_reprocess_once"] = True
+    issue_state["force_bypass_cooldown_once"] = True
+    pipeline = issue_state.setdefault("pipeline", {})
+    pipeline["manual_prompt_updated_at"] = now
+    pipeline["manual_prompt_preview"] = prompt[:240]
+    pipeline["updated_at"] = now
+    main.save_state(state)
+
+    record_event(
+        "manual_prompt_rerun_requested",
+        repo=repo,
+        issue_number=issue_number,
+        status="started",
+        data={"prompt_chars": len(prompt)},
+    )
+
+    started = time.time()
+    try:
+        main.run_repo_issue_once(repo, issue_number)
+    except Exception as e:
+        duration_ms = int((time.time() - started) * 1000)
+        record_event(
+            "manual_prompt_rerun_finished",
+            repo=repo,
+            issue_number=issue_number,
+            status="error",
+            duration_ms=duration_ms,
+            data={"error": str(e)[:280]},
+        )
+        raise HTTPException(status_code=500, detail=f"prompt rerun failed: {str(e)[:280]}")
+
+    duration_ms = int((time.time() - started) * 1000)
+    record_event(
+        "manual_prompt_rerun_finished",
+        repo=repo,
+        issue_number=issue_number,
+        status="ok",
+        duration_ms=duration_ms,
+        data={"prompt_chars": len(prompt)},
+    )
+    return {
+        "status": "ok",
+        "repo": repo,
+        "issue": issue_number,
+        "prompt_saved": True,
+        "duration_ms": duration_ms,
+        "time_utc": _utc_now_iso(),
+    }
 
 
 @app.get("/research")

@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 import copy
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ from github.git_api_commit import (
     get_default_branch,
     update_branch,
 )
-from github.issue_manager import create_issue, get_ai_issues
+from github.issue_manager import create_issue, get_ai_issues, upsert_issue_comment
 from github.pr_manager import (
     create_or_get_pr,
     get_open_pr_for_branch,
@@ -50,6 +51,7 @@ if TARGET_REPOS_ENV:
 
 POLL_INTERVAL = 300
 REPORT_MARKER = "<!-- codingai-test-report -->"
+FAILURE_COMMENT_MARKER = "<!-- codingai-failure-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
 ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -286,23 +288,51 @@ def _evaluate_ci_gate(ci_summary, ci_policy):
     }
 
 
+def _failure_signature(summary, details):
+    payload = f"{summary}\n{details}".strip().lower()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_failure_comment_body(repo, issue_number, summary, details, failure_streak, followup_issue_number):
+    utc_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = [
+        FAILURE_COMMENT_MARKER,
+        "### ⚠️ CodingAI failure report",
+        "",
+        f"- Repository: `{repo}`",
+        f"- Source issue: `#{issue_number}`",
+        f"- Updated (UTC): `{utc_now}`",
+        f"- Summary: {str(summary).strip()[:280]}",
+        f"- Repeated failure streak: `{failure_streak}`",
+    ]
+    if followup_issue_number:
+        header.append(f"- Follow-up issue: `#{followup_issue_number}`")
+    body = "\n".join(header)
+    detail_block = (details or "").strip()[:8000]
+    return f"{body}\n\n```text\n{detail_block}\n```\n"
+
+
+def _build_followup_issue_body(parent_issue_number, summary, details):
+    detail_block = (details or "").strip()[:8000]
+    return (
+        f"Parent issue: #{parent_issue_number}\n\n"
+        "This follow-up issue was created automatically because the same failure repeated "
+        "and likely needs a longer fix pipeline.\n\n"
+        f"Summary: {str(summary).strip()[:280]}\n\n"
+        f"```text\n{detail_block}\n```"
+    )
+
+
 def _register_failure(state, repo, number, summary, details, *, policy, started_at=None):
     details = (details or "").strip()
     details = details[:12000]
     dry_run = bool(policy.get("dry_run", False))
-    publish_failure_issue = bool(policy.get("safety", {}).get("publish_failure_issue", True))
-    ai_stop_phrase = str(policy.get("safety", {}).get("ai_stop_phrase", "AI Stop"))
-    cooldown_seconds = int(policy.get("safety", {}).get("failure_cooldown_seconds", 6 * 60 * 60))
-
-    if publish_failure_issue and not dry_run:
-        try:
-            create_issue(
-                repo,
-                f"AI Failure for Issue #{number}",
-                f"{summary}\n\n```\n{details}\n```",
-            )
-        except Exception as e:
-            print(f"Failed to publish failure issue for {repo}#{number}: {e}")
+    safety_policy = policy.get("safety", {})
+    publish_failure_comment = bool(safety_policy.get("publish_failure_comment", True))
+    publish_failure_subissue = bool(safety_policy.get("publish_failure_subissue", False))
+    failure_subissue_threshold = int(safety_policy.get("failure_subissue_threshold", 3))
+    ai_stop_phrase = str(safety_policy.get("ai_stop_phrase", "AI Stop"))
+    cooldown_seconds = int(safety_policy.get("failure_cooldown_seconds", 6 * 60 * 60))
 
     issue_state = _get_issue_state(state, repo, number)
     issue_state["pr_created"] = bool(issue_state.get("pr_created", False))
@@ -312,6 +342,73 @@ def _register_failure(state, repo, number, summary, details, *, policy, started_
     issue_state["dry_run"] = dry_run
     issue_state["ai_stop_phrase"] = ai_stop_phrase
     issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
+
+    failure_signature = _failure_signature(summary, details)
+    previous_signature = str(issue_state.get("failure_signature", ""))
+    same_failure_streak = int(issue_state.get("same_failure_streak", 0))
+    if failure_signature and failure_signature == previous_signature:
+        same_failure_streak += 1
+    else:
+        same_failure_streak = 1
+    issue_state["failure_signature"] = failure_signature
+    issue_state["same_failure_streak"] = same_failure_streak
+    issue_state["failure_count"] = int(issue_state.get("failure_count", 0)) + 1
+
+    followup_issue_number = issue_state.get("failure_followup_issue_number")
+    if (
+        not dry_run
+        and publish_failure_subissue
+        and not followup_issue_number
+        and same_failure_streak >= max(1, failure_subissue_threshold)
+    ):
+        try:
+            created = create_issue(
+                repo,
+                f"[Follow-up] Issue #{number} repeatedly failing",
+                _build_followup_issue_body(number, summary, details),
+            )
+            followup_issue_number = created.get("number")
+            issue_state["failure_followup_issue_number"] = followup_issue_number
+            record_event(
+                "failure_followup_issue_created",
+                repo=repo,
+                issue_number=number,
+                status="ok",
+                data={"followup_issue_number": followup_issue_number, "same_failure_streak": same_failure_streak},
+            )
+        except Exception as e:
+            print(f"Failed to create failure follow-up issue for {repo}#{number}: {e}")
+
+    if publish_failure_comment and not dry_run:
+        comment_body = _build_failure_comment_body(
+            repo,
+            number,
+            summary,
+            details,
+            same_failure_streak,
+            followup_issue_number,
+        )
+        try:
+            comment = upsert_issue_comment(
+                repo,
+                number,
+                comment_body,
+                marker=FAILURE_COMMENT_MARKER,
+            )
+            issue_state["failure_comment_id"] = comment.get("id")
+            issue_state["failure_comment_url"] = comment.get("url")
+            record_event(
+                "failure_comment_upserted",
+                repo=repo,
+                issue_number=number,
+                status="ok",
+                data={
+                    "comment_id": comment.get("id"),
+                    "updated": bool(comment.get("updated", False)),
+                },
+            )
+        except Exception as e:
+            print(f"Failed to publish failure comment for {repo}#{number}: {e}")
 
     pipeline = issue_state.get("pipeline")
     if isinstance(pipeline, dict):
@@ -331,7 +428,10 @@ def _register_failure(state, repo, number, summary, details, *, policy, started_
         data={
             "summary": str(summary)[:280],
             "error_excerpt": details[:1000],
-            "publish_failure_issue": publish_failure_issue and not dry_run,
+            "publish_failure_comment": publish_failure_comment and not dry_run,
+            "publish_failure_subissue": publish_failure_subissue and not dry_run,
+            "same_failure_streak": same_failure_streak,
+            "followup_issue_number": followup_issue_number,
         },
         persist=False,
     )
@@ -438,6 +538,17 @@ def _has_manual_approval(issue, policy):
         return True
 
     return False
+
+
+def _issue_with_manual_prompt(issue: dict, prompt: str) -> dict:
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        return issue
+    merged = dict(issue)
+    body = str(issue.get("body", "") or "")
+    prompt_block = f"\n\n---\nManual rerun prompt from UI:\n{prompt_text}\n---\n"
+    merged["body"] = f"{body}{prompt_block}".strip()
+    return merged
 
 
 def _utc_day_key():
@@ -712,6 +823,10 @@ def process_issue(repo, issue, state, policy=None):
     number = str(issue["number"])
     issue_started = time.time()
     issue_state = _get_issue_state(state, repo, number)
+    force_reprocess_once = bool(issue_state.pop("force_reprocess_once", False))
+    force_bypass_cooldown_once = bool(issue_state.pop("force_bypass_cooldown_once", False))
+    manual_prompt = str(issue_state.get("manual_prompt", "") or "").strip()
+    issue_for_llm = _issue_with_manual_prompt(issue, manual_prompt)
     job_id = f"{int(issue_started)}-{issue_state.get('branch_iteration', 0)}"
     pr_policy = policy.get("pr", {})
     patch_policy = policy.get("patch", {})
@@ -803,7 +918,11 @@ def process_issue(repo, issue, state, policy=None):
 
     if dry_run:
         issue_updated_at = str(issue.get("updated_at", ""))
-        if issue_updated_at and issue_updated_at == str(issue_state.get("dry_run_source_issue_updated_at", "")):
+        if (
+            not force_reprocess_once
+            and issue_updated_at
+            and issue_updated_at == str(issue_state.get("dry_run_source_issue_updated_at", ""))
+        ):
             _record_issue_outcome(
                 state,
                 repo,
@@ -832,7 +951,11 @@ def process_issue(repo, issue, state, policy=None):
             return
 
         issue_updated_at = str(issue.get("updated_at", ""))
-        if issue_updated_at and issue_updated_at == str(issue_state.get("source_issue_updated_at", "")):
+        if (
+            not force_reprocess_once
+            and issue_updated_at
+            and issue_updated_at == str(issue_state.get("source_issue_updated_at", ""))
+        ):
             _record_issue_outcome(
                 state,
                 repo,
@@ -919,7 +1042,7 @@ def process_issue(repo, issue, state, policy=None):
                         return
 
     # Cooldown
-    if should_skip_due_to_cooldown(state, repo, number):
+    if not force_bypass_cooldown_once and should_skip_due_to_cooldown(state, repo, number):
         _record_issue_outcome(
             state,
             repo,
@@ -998,7 +1121,7 @@ def process_issue(repo, issue, state, policy=None):
             _set_pipeline_stage(state, repo, number, "orchestrator_v2_preflight", active_branch=branch)
             v2_result = ORCHESTRATOR_V2.run_issue(
                 repo_name=repo,
-                issue=issue,
+                issue=issue_for_llm,
                 repo_path=repo_path,
                 repo_analysis=repo_analysis,
                 strategy_policy=strategy_policy,
@@ -1039,7 +1162,7 @@ def process_issue(repo, issue, state, policy=None):
         patch_result = propose_patch_ops(
             repo_path=repo_path,
             repo_name=repo,
-            issue=issue,
+            issue=issue_for_llm,
             repo_analysis=repo_analysis,
             max_ops=int(patch_policy.get("max_patch_ops", 20)),
         )
@@ -1181,7 +1304,7 @@ def process_issue(repo, issue, state, policy=None):
             test_patch_result = propose_test_patch_ops(
                 repo_path=repo_path,
                 repo_name=repo,
-                issue=issue,
+                issue=issue_for_llm,
                 repo_analysis=repo_analysis,
                 base_patch_ops=patch_ops,
                 max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
@@ -1447,6 +1570,8 @@ def process_issue(repo, issue, state, policy=None):
         issue_state["check_run_url"] = check_run_url
         issue_state["report_comment_id"] = comment_result.get("id")
         issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
+        if manual_prompt:
+            issue_state["last_manual_prompt_used_at"] = int(time.time())
         issue_state["retry_after"] = 0
         issue_state["dry_run"] = False
         _set_pipeline_stage(
@@ -1487,7 +1612,7 @@ def process_issue(repo, issue, state, policy=None):
         )
 
 
-def _run_repo_cycle(repo):
+def _run_repo_cycle(repo, target_issue_number: int | None = None):
     cycle_started = time.time()
     cycle_status = "ok"
     issues_count = 0
@@ -1530,15 +1655,30 @@ def _run_repo_cycle(repo):
     else:
         try:
             issues = get_ai_issues(repo)
-            issues_count = len(issues)
         except Exception as e:
             cycle_status = "issues_fetch_failed"
             print(f"Failed to fetch issues for {repo}: {e}")
         else:
-            if not issues:
-                cycle_status = "no_issues"
-            for issue in issues:
+            selected_issues = list(issues or [])
+            if target_issue_number is not None:
+                selected_issues = [
+                    i for i in selected_issues
+                    if int(i.get("number", -1) or -1) == int(target_issue_number)
+                ]
+
+            issues_count = len(selected_issues)
+            if not selected_issues:
+                if target_issue_number is not None:
+                    cycle_status = "target_issue_not_found"
+                else:
+                    cycle_status = "no_issues"
+            for issue in selected_issues:
                 process_issue(repo, issue, state, policy=repo_policy)
+
+            if target_issue_number is not None and not selected_issues:
+                print(f"Target issue #{target_issue_number} not found in ai-fix queue for {repo}.")
+            elif not selected_issues:
+                cycle_status = "no_issues"
 
     cycle_duration_ms = _elapsed_ms(cycle_started) or 0
     inc_counter("codingai_repo_cycles_total", labels={"repo": repo, "status": cycle_status})
@@ -1561,6 +1701,10 @@ def _run_repo_cycle(repo):
 
 def run_repo_cycle_once(repo):
     _run_repo_cycle(repo)
+
+
+def run_repo_issue_once(repo, issue_number):
+    _run_repo_cycle(repo, target_issue_number=int(issue_number))
 
 
 def get_available_repos():

@@ -4,7 +4,10 @@
   "safety": {
     "ai_stop_phrase": "AI Stop",
     "failure_cooldown_seconds": 21600,
-    "publish_failure_issue": true
+    "publish_failure_comment": true,
+    "publish_failure_subissue": false,
+    "failure_subissue_threshold": 3,
+    "publish_failure_issue": false
   },
   "approval": {
     "required": false,

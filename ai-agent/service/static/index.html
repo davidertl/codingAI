@@ -305,6 +305,7 @@
 
     .settings-pane { display: none; }
     .settings-pane.active { display: grid; gap: 10px; }
+    .hidden { display: none !important; }
 
     .input-with-action {
       display: grid;
@@ -652,7 +653,11 @@
       <div class="content">
         <section class="box">
           <div class="hd2">
-            <strong id="selectedRepoTitle">Repository</strong>
+            <div class="row">
+              <strong>Open AI-Fix Queue</strong>
+              <span class="mono" id="selectedRepoTitle">repo: -</span>
+              <span class="mono" id="queueError"></span>
+            </div>
             <div class="row">
               <button class="primary" id="btnRunOnce">Run Once</button>
               <button id="btnStartWorker">Start Worker</button>
@@ -666,13 +671,6 @@
             <span id="policyMeta">Policy: -</span>
             <span id="budgetMeta">Budget: -</span>
           </div>
-        </section>
-
-        <section class="box">
-          <div class="hd2">
-            <strong>Open AI-Fix Queue</strong>
-            <span class="mono" id="queueError"></span>
-          </div>
           <div id="queueWrap"></div>
         </section>
 
@@ -684,10 +682,13 @@
           <div id="trackedWrap"></div>
         </section>
 
-        <section class="box" id="notesEditor">
+        <section class="box hidden" id="notesEditor">
           <div class="hd2">
             <strong>Notes for LLM</strong>
-            <span class="mono" id="rulesMeta">Select a project to edit project/worker rules.</span>
+            <div class="row">
+              <span class="mono" id="rulesMeta">Select a project to edit project/worker rules.</span>
+              <button class="ghost" id="btnCloseNotesEditor" type="button" title="Close Notes Editor">X</button>
+            </div>
           </div>
 
           <label for="rulesGlobalInput">Global Rules</label>
@@ -794,6 +795,7 @@
       workersSettingsMeta: document.getElementById("workersSettingsMeta"),
       workersSettingsList: document.getElementById("workersSettingsList"),
       btnOpenNotesEditor: document.getElementById("btnOpenNotesEditor"),
+      btnCloseNotesEditor: document.getElementById("btnCloseNotesEditor"),
       sidebarRulesStatus: document.getElementById("sidebarRulesStatus"),
       rulesMeta: document.getElementById("rulesMeta"),
       rulesGlobalInput: document.getElementById("rulesGlobalInput"),
@@ -869,6 +871,19 @@
       el.toast.classList.add("show");
       clearTimeout(showToast._t);
       showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
+    }
+
+    function openNotesEditor() {
+      const editor = document.getElementById("notesEditor");
+      if (!editor) return;
+      editor.classList.remove("hidden");
+      editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function closeNotesEditor() {
+      const editor = document.getElementById("notesEditor");
+      if (!editor) return;
+      editor.classList.add("hidden");
     }
 
     function clampSidebarWidth(px) {
@@ -1189,6 +1204,7 @@
           : "ci_gate=not_checked";
         const testPatch = `test_patch=${item.test_patch_applied ? "applied" : "no"}(+${item.test_patch_ops_added ?? 0}, conf=${item.test_patch_confidence ?? "-"})`;
         const strategyCfg = `strategy(max=${item.strategy_max_attempts ?? "-"}, q=${item.strategy_quarantine_threshold ?? "-"}/${item.strategy_quarantine_seconds ?? "-"})`;
+        const manualPrompt = escapeHtml(String(item.manual_prompt || ""));
         const err = item.last_error ? `<div class="mono">error: ${escapeHtml(String(item.last_error).slice(0, 140))}</div>` : "";
         return `
           <article class="issue">
@@ -1204,7 +1220,9 @@
             <div class="mono">last_duration=${lastDuration} ${ciText}</div>
             <div class="mono">retry_after=${retry}</div>
             <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>
+            <textarea data-prompt="${item.issue_number}" placeholder="Add prompt and rerun this issue...">${manualPrompt}</textarea>
             <div class="row">
+              <button data-action="prompt-rerun" data-issue="${item.issue_number}">Send + Rerun</button>
               <button data-action="diff" data-issue="${item.issue_number}">View diff</button>
               <button data-action="pause" data-issue="${item.issue_number}">Pause</button>
               <button data-action="resume" data-issue="${item.issue_number}">Resume</button>
@@ -1329,10 +1347,10 @@
 
     async function refreshSummary() {
       if (!state.selectedRepo) {
-        el.selectedRepoTitle.textContent = "Repository";
+        el.selectedRepoTitle.textContent = "repo: -";
         return;
       }
-      el.selectedRepoTitle.textContent = `Repository: ${state.selectedRepo}`;
+      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
       const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
       state.summary = summary;
       renderQueue(summary);
@@ -1405,9 +1423,11 @@
     }
 
     if (el.btnOpenNotesEditor) {
-      el.btnOpenNotesEditor.addEventListener("click", () => {
-        document.getElementById("notesEditor")?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+      el.btnOpenNotesEditor.addEventListener("click", openNotesEditor);
+    }
+
+    if (el.btnCloseNotesEditor) {
+      el.btnCloseNotesEditor.addEventListener("click", closeNotesEditor);
     }
 
     el.repoList.addEventListener("click", async (ev) => {
@@ -1454,6 +1474,22 @@
       const action = btn.dataset.action;
       if (!issue || !action || !state.selectedRepo) return;
       try {
+        if (action === "prompt-rerun") {
+          const promptInput = el.trackedWrap.querySelector(`textarea[data-prompt="${cssEscape(issue)}"]`);
+          const prompt = String(promptInput?.value || "").trim();
+          if (!prompt) {
+            showToast("Prompt is required before rerun.", true);
+            return;
+          }
+          await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/prompt-rerun`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt }),
+          });
+          showToast(`Prompt rerun sent for #${issue}`);
+          await refreshAll();
+          return;
+        }
         if (action === "diff") {
           const res = await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/diff`);
           const pre = document.querySelector(`pre[data-diff="${issue}"]`);

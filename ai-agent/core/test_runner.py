@@ -815,16 +815,55 @@ def _playwright_dashboard_checks(page, base_url: str):
         repos_before = _http_get_json(f"{base_url.rstrip('/')}/repos")
         if not isinstance(repos_before, list) or not repos_before:
             return False, ["dashboard_check_error=no repos found from /repos"]
-        target_repo = str(repos_before[0].get("repo") or "")
+        preferred = next((repo for repo in repos_before if str(repo.get("repo") or "") == "testforai"), repos_before[0])
+        target_repo = str(preferred.get("repo") or "")
         if not target_repo:
             return False, ["dashboard_check_error=empty target repo from /repos"]
         lines.append(f"target_repo={target_repo}")
+
+        select_target = page.locator(f"#repoList button[data-repo='{target_repo}'][data-action='select']")
+        if select_target.count() > 0:
+            select_target.first.click(timeout=5000)
+            page.wait_for_timeout(800)
 
         setup_values_before = _http_get_json(f"{base_url.rstrip('/')}/setup/values")
         owner_before = str(setup_values_before.get("owner") or "")
         app_id_before = str(setup_values_before.get("app_id") or "")
         install_id_before = str(setup_values_before.get("installation_id") or "")
         should_restore_github = bool(owner_before and app_id_before and install_id_before)
+
+        repository_header_strong_exists = page.locator("strong#selectedRepoTitle").count() > 0
+        lines.append(f"repository_header_strong_exists={repository_header_strong_exists}")
+        if repository_header_strong_exists:
+            ok = False
+
+        queue_box = page.locator(".main-panel .content .box").first
+        queue_actions_present = all(
+            queue_box.get_by_role("button", name=label).count() > 0
+            for label in ("Run Once", "Start Worker", "Stop Worker", "Refresh")
+        )
+        lines.append(f"queue_actions_present={queue_actions_present}")
+        if not queue_actions_present:
+            ok = False
+
+        notes_visible_initial = page.locator("#notesEditor").first.is_visible()
+        lines.append(f"notes_visible_initial={notes_visible_initial}")
+        if notes_visible_initial:
+            ok = False
+
+        page.locator("#btnOpenNotesEditor").first.click(timeout=5000)
+        page.wait_for_timeout(350)
+        notes_visible_after_open = page.locator("#notesEditor").first.is_visible()
+        lines.append(f"notes_visible_after_open={notes_visible_after_open}")
+        if not notes_visible_after_open:
+            ok = False
+
+        page.locator("#btnCloseNotesEditor").first.click(timeout=5000)
+        page.wait_for_timeout(350)
+        notes_visible_after_close = page.locator("#notesEditor").first.is_visible()
+        lines.append(f"notes_visible_after_close={notes_visible_after_close}")
+        if notes_visible_after_close:
+            ok = False
 
         # Expand settings section if collapsed.
         settings_section = page.locator(".collapsible[data-section='settings']").first
@@ -971,6 +1010,12 @@ def _playwright_dashboard_checks(page, base_url: str):
             if owner_restored != owner_before or app_restored != app_id_before or install_restored != install_id_before:
                 ok = False
 
+        # Re-select target repo after setup changes may have reset current selection.
+        select_after_setup = page.locator(f"#repoList button[data-repo='{target_repo}'][data-action='select']")
+        if select_after_setup.count() > 0:
+            select_after_setup.first.click(timeout=5000)
+            page.wait_for_timeout(900)
+
         # LLM settings save/read.
         page.locator(".settings-tab[data-settings-tab='llm']").first.click(timeout=5000)
         page.wait_for_timeout(500)
@@ -1078,6 +1123,19 @@ def _playwright_dashboard_checks(page, base_url: str):
         page.wait_for_timeout(1200)
         lines.append("refresh_clicked=true")
 
+        tracked_cards = page.locator("#trackedWrap .issue")
+        tracked_count = tracked_cards.count()
+        lines.append(f"tracked_cards_count={tracked_count}")
+        if tracked_count > 0:
+            prompt_box_count = tracked_cards.first.locator("textarea[data-prompt]").count()
+            prompt_btn_count = tracked_cards.first.get_by_role("button", name="Send + Rerun").count()
+            lines.append(f"tracked_prompt_box_present={prompt_box_count > 0}")
+            lines.append(f"tracked_prompt_button_present={prompt_btn_count > 0}")
+            if prompt_box_count == 0 or prompt_btn_count == 0:
+                ok = False
+        else:
+            lines.append("tracked_prompt_check_skipped=no_cards")
+
         # Project toggle (enable/disable/enable)
         projects = _http_get_json(f"{base_url.rstrip('/')}/projects")
         proj_items = projects.get("projects", []) if isinstance(projects, dict) else []
@@ -1157,6 +1215,18 @@ def _playwright_dashboard_checks(page, base_url: str):
             ok = False
 
         # Notes for LLM checks.
+        select_for_rules = page.locator(f"#repoList button[data-repo='{target_repo}'][data-action='select']")
+        if select_for_rules.count() > 0:
+            select_for_rules.first.click(timeout=5000)
+            page.wait_for_timeout(700)
+
+        page.locator("#btnOpenNotesEditor").first.click(timeout=5000)
+        page.wait_for_timeout(400)
+        notes_visible_for_rules = page.locator("#notesEditor").first.is_visible()
+        lines.append(f"notes_visible_for_rules={notes_visible_for_rules}")
+        if not notes_visible_for_rules:
+            ok = False
+
         global_before_resp = _http_get_json(f"{base_url.rstrip('/')}/rules/global")
         global_before = global_before_resp.get("rules", {}) if isinstance(global_before_resp, dict) else {}
         original_global_rules = str(global_before.get("rules_markdown") or "")

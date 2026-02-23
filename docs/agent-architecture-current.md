@@ -24,7 +24,7 @@ Version: experimental-0.22.0
 - `llm/strategy_llm.py`: next-strategy selector with retry/backoff.
 - `github/app_auth.py`: GitHub App JWT + installation token; PEM path via `paths.GITHUB_APP_PEM_FILE`.
 - `github/git_api_commit.py`: blob/tree/commit/ref without git push.
-- `github/issue_manager.py`: issue polling and failure issue creation.
+- `github/issue_manager.py`: issue polling and failure comment upsert on source issues; optional follow-up issue creation after repeated failures.
 - `github/pr_manager.py`: PR create/reuse, AI Stop detection, comment upsert.
 - `github/checks_manager.py`: GitHub Checks API publish.
 - `github/ci_status.py`: combined status + check-runs for CI gate.
