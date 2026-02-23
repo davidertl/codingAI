@@ -76,6 +76,6 @@ This reflects verified code/runtime state for `ai-agent/` on branch `localstate`
 4. Phase 15 (chat/repo UX) is pending.
 5. Phase 20 prompt-safety filter is not yet implemented.
 6. Phase 21 missing-feature self-task issue creation is not yet implemented.
-7. Full V2 replacement mode is not yet active by default; currently `ORCHESTRATOR_V2_ENABLED` runs as preflight before legacy patch/test flow.
+7. Full V2 replacement mode is not yet active by default; currently `ORCHESTRATOR_V2_ENABLED` runs as preflight before the current patch/test flow.
 
 Implementation plan for all open roadmap items: `docs/implementation-plan.md`.

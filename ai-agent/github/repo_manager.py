@@ -79,7 +79,7 @@ def _remote_default_branch(repo_path):
 
 def clone_or_update(repo_name):
     """
-    Legacy path used by earlier phases. Kept for compatibility but prefer prepare_job_worktree.
+    Backward-compatible path used by earlier phases. Prefer prepare_job_worktree.
     """
     mirror = ensure_repo_mirror(repo_name)
     default_branch = _remote_default_branch(mirror)

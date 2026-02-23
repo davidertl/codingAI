@@ -355,7 +355,7 @@ def health():
         "setup_required": not bool(setup.get("setup_complete")),
         "setup": setup,
         "orchestrator_v2_enabled": bool(main.ORCHESTRATOR_V2_ENABLED),
-        "runner_mode": "sandbox_api" if should_use_sandbox_mode() else "legacy_local",
+        "runner_mode": "sandbox_api" if should_use_sandbox_mode() else "local_runner",
         "last_orchestrator_run": (last_orchestrator_run[0] if last_orchestrator_run else None),
     }
 
@@ -991,10 +991,10 @@ def _project_default_push_gate_modes(repos: list[str]) -> dict[str, str]:
 
 def _project_rows(repos: list[str]):
     state = main.load_state()
-    legacy_enabled = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
+    state_enabled_repos = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
     defaults = _project_default_push_gate_modes(repos)
     migrate_projects_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
-    return list_projects_store(repos, legacy_enabled=legacy_enabled, default_push_gate_by_repo=defaults)
+    return list_projects_store(repos, state_enabled_repos=state_enabled_repos, default_push_gate_by_repo=defaults)
 
 
 def _validate_project_repo(repo: str, repos: list[str]):

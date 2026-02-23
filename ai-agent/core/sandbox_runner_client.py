@@ -7,7 +7,7 @@ from orchestrator.errors import ExecutionBoundaryError
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
-RUNNER_MODE = os.getenv("RUNNER_MODE", "legacy_local").strip().lower()
+RUNNER_MODE = os.getenv("RUNNER_MODE", "local_runner").strip().lower()
 SANDBOX_RUNNER_BASE_URL = os.getenv("SANDBOX_RUNNER_BASE_URL", "").strip().rstrip("/")
 SANDBOX_RUNNER_TIMEOUT_SECONDS = max(5, int(os.getenv("SANDBOX_RUNNER_TIMEOUT_SECONDS", "300") or "300"))
 SANDBOX_RUNNER_POLL_INTERVAL_SECONDS = max(
