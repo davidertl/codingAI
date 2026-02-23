@@ -34,7 +34,7 @@ def _now() -> int:
 
 
 def _key(query: str) -> str:
-    return hashlib.sha1(query.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return hashlib.sha256(query.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
 def _load_cache() -> dict:

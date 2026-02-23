@@ -14,6 +14,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 COPY ai-agent /app/ai-agent
 
+RUN groupadd -r app && useradd -r -g app app && \
+    chown -R app:app /app/ai-agent
+
+USER app
+
 EXPOSE 8000
 
 CMD ["uvicorn", "service.api:app", "--host", "0.0.0.0", "--port", "8000"]

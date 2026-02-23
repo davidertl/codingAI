@@ -22,6 +22,10 @@ ai-agent/github_app/*.pem
 .local/
 .npm/
 .vscode-server/
+.playwright/
+.playwright-cli/
+output/playwright/
+*.log
 
 # Python runtime artifacts
 **/__pycache__/

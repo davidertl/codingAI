@@ -231,11 +231,15 @@ def _normalize_policy(raw_policy):
         minimum=0,
         maximum=31 * 24 * 60 * 60,
     )
+<<<<<<< ui-notes-local-llm
+    safety["publish_failure_subissue"] = _as_bool(safety.get("publish_failure_subissue"), default=False)
+=======
     previous_publish_issue_flag = _as_bool(safety.get("publish_failure_issue"), default=False)
     publish_failure_subissue = safety.get("publish_failure_subissue")
     if publish_failure_subissue is None:
         publish_failure_subissue = previous_publish_issue_flag
     safety["publish_failure_subissue"] = _as_bool(publish_failure_subissue, default=False)
+>>>>>>> localstate
     safety["publish_failure_comment"] = _as_bool(safety.get("publish_failure_comment"), default=True)
     safety["failure_subissue_threshold"] = _as_int(
         safety.get("failure_subissue_threshold", 3),
@@ -243,7 +247,10 @@ def _normalize_policy(raw_policy):
         minimum=1,
         maximum=50,
     )
+<<<<<<< ui-notes-local-llm
+=======
     safety["publish_failure_issue"] = previous_publish_issue_flag
+>>>>>>> localstate
 
     approval = merged.setdefault("approval", {})
     approval["required"] = _as_bool(approval.get("required"), default=False)

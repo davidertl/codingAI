@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import time
+import re
 from pathlib import Path
 
 from paths import AI_AGENT_DIR
@@ -10,7 +11,9 @@ from paths import AI_AGENT_DIR
 _DB_RAW = os.getenv("CODINGAI_DB_FILE", "").strip()
 DB_FILE = Path(_DB_RAW).expanduser().resolve() if _DB_RAW else (AI_AGENT_DIR / "state.db").resolve()
 _LOCK = threading.Lock()
-_VALID_PUSH_GATES = {"auto_10s", "manual"}
+_AUTO_PUSH_GATE_PATTERN = re.compile(r"^auto_(\d{1,6})s$")
+_MIN_AUTO_GATE_SECONDS = 1
+_MAX_AUTO_GATE_SECONDS = 86400
 
 
 def db_path() -> str:
@@ -44,8 +47,16 @@ def init_db():
 
 def _normalize_push_gate_mode(mode: str | None, *, default: str = "auto_10s") -> str:
     raw = str(mode or "").strip().lower()
-    if raw in _VALID_PUSH_GATES:
-        return raw
+    if raw == "manual":
+        return "manual"
+    m = _AUTO_PUSH_GATE_PATTERN.match(raw)
+    if m:
+        try:
+            seconds = int(m.group(1))
+        except ValueError:
+            seconds = 10
+        seconds = max(_MIN_AUTO_GATE_SECONDS, min(_MAX_AUTO_GATE_SECONDS, seconds))
+        return f"auto_{seconds}s"
     return default
 
 
@@ -83,7 +94,10 @@ def _upsert_project(
 def seed_projects_if_needed(
     repo_names: list[str],
     *,
+<<<<<<< ui-notes-local-llm
+=======
     state_enabled_repos: list[str] | None = None,
+>>>>>>> localstate
     default_push_gate_by_repo: dict[str, str] | None = None,
 ):
     init_db()
@@ -96,40 +110,48 @@ def seed_projects_if_needed(
         cur = conn.execute("SELECT repo, enabled, push_gate_mode FROM projects")
         existing_rows = cur.fetchall()
         existing = {str(row["repo"]): row for row in existing_rows}
+<<<<<<< ui-notes-local-llm
+=======
         state_enabled_set = set(str(r).strip() for r in (state_enabled_repos or []) if str(r).strip())
         explicit_state_seed = state_enabled_repos is not None
         empty_table = len(existing) == 0
+>>>>>>> localstate
 
         for repo in cleaned:
             if repo in existing:
                 continue
+<<<<<<< ui-notes-local-llm
+=======
             enabled = (repo in state_enabled_set) if explicit_state_seed else True
+>>>>>>> localstate
             default_mode = _normalize_push_gate_mode(default_push_gate_by_repo.get(repo), default="auto_10s")
             _upsert_project(
                 conn,
                 repo,
-                enabled=enabled,
+                enabled=True,
                 labels_json="[]",
                 push_gate_mode=default_mode,
                 policy_ref="",
             )
 
-        # If table exists but has no row for currently discovered repos, the loop above adds them.
-        if empty_table and not cleaned:
-            conn.commit()
-        else:
-            conn.commit()
+        conn.commit()
 
 
 def list_projects(
     repo_names: list[str],
     *,
+<<<<<<< ui-notes-local-llm
+=======
     state_enabled_repos: list[str] | None = None,
+>>>>>>> localstate
     default_push_gate_by_repo: dict[str, str] | None = None,
 ) -> list[dict]:
     seed_projects_if_needed(
         repo_names,
+<<<<<<< ui-notes-local-llm
+=======
         state_enabled_repos=state_enabled_repos,
+>>>>>>> localstate
         default_push_gate_by_repo=default_push_gate_by_repo,
     )
     if not repo_names:
@@ -231,6 +253,8 @@ def get_project_push_gate_mode(repo: str, *, default: str = "auto_10s") -> str:
     if not row:
         return _normalize_push_gate_mode(default)
     return _normalize_push_gate_mode(row["push_gate_mode"], default=default)
+<<<<<<< ui-notes-local-llm
+=======
 
 
 def migrate_from_state(
@@ -248,3 +272,4 @@ def migrate_from_state(
         state_enabled_repos=state_enabled_repos,
         default_push_gate_by_repo=default_push_gate_by_repo,
     )
+>>>>>>> localstate

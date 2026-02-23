@@ -645,7 +645,24 @@ def _resolve_branch_for_issue(state, repo, issue_number, policy):
 
 
 def _checkout_local_branch_at_sha(repo_path, branch, base_sha):
-    subprocess.run(["git", "checkout", "-B", branch, base_sha], cwd=repo_path, check=True)
+    checkout = subprocess.run(
+        ["git", "checkout", "-B", branch, base_sha],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    if checkout.returncode != 0:
+        combined = f"{checkout.stdout or ''}\n{checkout.stderr or ''}".lower()
+        branch_locked = "is already checked out at" in combined or "cannot force update the branch" in combined
+        if not branch_locked:
+            raise subprocess.CalledProcessError(
+                checkout.returncode,
+                checkout.args,
+                output=checkout.stdout,
+                stderr=checkout.stderr,
+            )
+        # Worktree-safe fallback: use detached HEAD at the same base SHA.
+        subprocess.run(["git", "checkout", "--detach", base_sha], cwd=repo_path, check=True)
     subprocess.run(["git", "reset", "--hard", base_sha], cwd=repo_path, check=True)
 
 

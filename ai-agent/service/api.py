@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,7 +26,6 @@ from core.observability import (
 )
 from core.sandbox_runner_client import should_use_sandbox_mode
 from core.projects_store import list_projects as list_projects_store
-from core.projects_store import migrate_from_state as migrate_projects_from_state
 from core.projects_store import set_project_push_gate_mode as set_project_push_gate_mode_store
 from core.projects_store import set_project_enabled as set_project_enabled_store
 from core.rules_store import delete_rules as delete_rules_store
@@ -64,6 +63,7 @@ from github.app_auth import get_installation_token
 from github.repo_manager import list_installation_repos
 
 SERVICE_POLL_INTERVAL_SECONDS = int(os.getenv("SERVICE_POLL_INTERVAL_SECONDS", str(main.POLL_INTERVAL)))
+LIVE_WS_PUSH_INTERVAL_SECONDS = max(2, int(os.getenv("LIVE_WS_PUSH_INTERVAL_SECONDS", "7") or "7"))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _TRUTHY = {"1", "true", "yes", "on"}
 CHAT_STREAM_CHUNK_CHARS = max(8, int(os.getenv("CHAT_STREAM_CHUNK_CHARS", "120") or "120"))
@@ -71,6 +71,7 @@ CHAT_FILE_TREE_MAX_DEPTH = max(1, int(os.getenv("CHAT_FILE_TREE_MAX_DEPTH", "4")
 CHAT_FILE_SNIPPET_MAX_LINES = max(20, int(os.getenv("CHAT_FILE_SNIPPET_MAX_LINES", "240") or "240"))
 CHAT_FILE_SNIPPET_MAX_CHARS = max(500, int(os.getenv("CHAT_FILE_SNIPPET_MAX_CHARS", "22000") or "22000"))
 _ENV_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_AUTO_PUSH_GATE_PATTERN = re.compile(r"^auto_(\d{1,6})s$")
 
 
 def _utc_now_iso():
@@ -990,11 +991,16 @@ def _project_default_push_gate_modes(repos: list[str]) -> dict[str, str]:
 
 
 def _project_rows(repos: list[str]):
+<<<<<<< ui-notes-local-llm
+    defaults = _project_default_push_gate_modes(repos)
+    return list_projects_store(repos, default_push_gate_by_repo=defaults)
+=======
     state = main.load_state()
     state_enabled_repos = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
     defaults = _project_default_push_gate_modes(repos)
     migrate_projects_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
     return list_projects_store(repos, state_enabled_repos=state_enabled_repos, default_push_gate_by_repo=defaults)
+>>>>>>> localstate
 
 
 def _validate_project_repo(repo: str, repos: list[str]):
@@ -1047,8 +1053,14 @@ def set_project_push_gate(repo: str, mode: str):
     repos, _source, _error = _project_repo_candidates()
     _validate_project_repo(repo, repos)
     normalized = str(mode or "").strip().lower()
-    if normalized not in {"auto_10s", "manual"}:
-        raise HTTPException(status_code=400, detail="mode must be one of: auto_10s, manual")
+    if normalized != "manual":
+        match = _AUTO_PUSH_GATE_PATTERN.match(normalized)
+        if not match:
+            raise HTTPException(status_code=400, detail="mode must be 'manual' or 'auto_<seconds>s'")
+        seconds = int(match.group(1))
+        if seconds < 1 or seconds > 86400:
+            raise HTTPException(status_code=400, detail="auto gate seconds must be in range 1..86400")
+        normalized = f"auto_{seconds}s"
     _project_rows(repos)
     normalized = set_project_push_gate_mode_store(repo, normalized)
     record_event(
@@ -1721,6 +1733,11 @@ def ui_alias():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return PlainTextResponse("", status_code=204)
+
+
 @app.get("/repos")
 def repos():
     available = main.get_available_repos()
@@ -1861,6 +1878,155 @@ def repo_summary(repo: str):
         "policy": policy,
         "budget": _repo_budget_status(repo),
     }
+
+
+def _empty_repo_summary(repo: str | None = None, *, error: str = "") -> dict:
+    return {
+        "repo": str(repo or ""),
+        "time_utc": _utc_now_iso(),
+        "worker": None,
+        "queue": {"repo": str(repo or ""), "count": 0, "issues": [], "error": str(error or "")[:500]},
+        "tracked_issues": [],
+        "policy": {},
+        "budget": {},
+    }
+
+
+def _live_rules_snapshot(repo: str | None) -> dict:
+    global_rules = _read_rules("global")
+    if not repo:
+        return {
+            "global": global_rules,
+            "project": None,
+            "worker": None,
+            "effective": {
+                "repo": "",
+                "text": str(global_rules.get("rules_markdown") or ""),
+                "sources": [global_rules],
+            },
+        }
+
+    project_rules = _read_rules("projects", repo=repo)
+    worker_rules = _read_rules("workers", repo=repo)
+    try:
+        effective = effective_rules_store(repo)
+    except Exception:
+        effective = {
+            "repo": repo,
+            "text": "",
+            "sources": [global_rules, project_rules, worker_rules],
+        }
+    return {
+        "global": global_rules,
+        "project": project_rules,
+        "worker": worker_rules,
+        "effective": {
+            "repo": str(effective.get("repo") or repo),
+            "text": str(effective.get("text") or ""),
+            "sources": effective.get("sources", []),
+        },
+    }
+
+
+def _live_snapshot(selected_repo: str | None = None) -> dict:
+    health_payload = health()
+    repos_payload = repos()
+    repo_names = [
+        str(item.get("repo") or "").strip()
+        for item in repos_payload
+        if isinstance(item, dict) and str(item.get("repo") or "").strip()
+    ]
+    if selected_repo and selected_repo in repo_names:
+        resolved_repo = selected_repo
+    else:
+        resolved_repo = repo_names[0] if repo_names else None
+
+    projects_payload = projects()
+    workers_payload = workers()
+    setup_status_payload = setup_status_api()
+    setup_values_payload = setup_values_api()
+
+    if resolved_repo:
+        try:
+            summary_payload = repo_summary(resolved_repo)
+        except Exception as e:
+            summary_payload = _empty_repo_summary(resolved_repo, error=f"summary failed: {str(e)[:260]}")
+    else:
+        summary_payload = _empty_repo_summary()
+
+    return {
+        "type": "snapshot",
+        "time_utc": _utc_now_iso(),
+        "selected_repo": resolved_repo,
+        "health": health_payload,
+        "repos": repos_payload,
+        "projects": projects_payload,
+        "workers": workers_payload,
+        "setup_status": setup_status_payload,
+        "setup_values": setup_values_payload,
+        "summary": summary_payload,
+        "rules": _live_rules_snapshot(resolved_repo),
+    }
+
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket):
+    await websocket.accept()
+    selected_repo = None
+    seq = 0
+    await websocket.send_json(
+        {
+            "type": "hello",
+            "time_utc": _utc_now_iso(),
+            "interval_seconds": LIVE_WS_PUSH_INTERVAL_SECONDS,
+        }
+    )
+
+    while True:
+        raw_message = None
+        try:
+            raw_message = await asyncio.wait_for(websocket.receive_text(), timeout=LIVE_WS_PUSH_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            raw_message = None
+        except WebSocketDisconnect:
+            break
+        except Exception:
+            break
+
+        if raw_message:
+            try:
+                payload = json.loads(raw_message)
+            except Exception:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "time_utc": _utc_now_iso(),
+                        "error": "invalid_json",
+                    }
+                )
+                continue
+            msg_type = str(payload.get("type") or "").strip().lower()
+            if msg_type in {"set_repo", "select_repo", "subscribe"}:
+                candidate = str(payload.get("repo") or "").strip()
+                selected_repo = candidate or None
+            elif msg_type == "ping":
+                await websocket.send_json({"type": "pong", "time_utc": _utc_now_iso()})
+
+        try:
+            snapshot = _live_snapshot(selected_repo)
+        except Exception as e:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "time_utc": _utc_now_iso(),
+                    "error": f"snapshot_failed: {str(e)[:280]}",
+                }
+            )
+            continue
+
+        seq += 1
+        snapshot["seq"] = seq
+        await websocket.send_json(snapshot)
 
 
 @app.get("/state")
