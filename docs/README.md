@@ -14,7 +14,7 @@ This folder documents the current implementation state and operating model of Co
 5. `roadmap.md` for phase progression (implemented + partial + pending phases).
 6. `implementation-plan.md` for open roadmap gaps and concrete implementation steps.
 7. `versioning-policy.md` for global docs versioning rules (optional for CodingAI, enforceable per workflow).
-8. `migration-strategy-cleanup.md` for strict naming cleanup and compatibility migration notes.
+8. `strict-cleanup-notes.md` for strict naming cleanup decisions.
 
 ## Validation snapshot
 
@@ -39,4 +39,4 @@ This docs refresh is based on live checks run against current code:
 - `roadmap.md`: phases 1–21 (current and future, includes governance/observability).
 - `implementation-plan.md`: actionable plan for features not fully implemented yet.
 - `versioning-policy.md`: versioning scheme (`x1.x2.x3`) and bump criteria.
-- `migration-strategy-cleanup.md`: explicit migration steps for strict cleanup while preserving behavior.
+- `strict-cleanup-notes.md`: strict cleanup decisions and current naming baseline.

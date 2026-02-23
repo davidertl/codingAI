@@ -6,8 +6,7 @@
     "failure_cooldown_seconds": 21600,
     "publish_failure_comment": true,
     "publish_failure_subissue": false,
-    "failure_subissue_threshold": 3,
-    "publish_failure_issue": false
+    "failure_subissue_threshold": 3
   },
   "approval": {
     "required": false,
