@@ -1,4 +1,5 @@
 # Local LLM Setup
+Version: experimental-0.22.0
 
 Source of truth: `ai-agent/llm/provider.py`
 
@@ -8,7 +9,7 @@ Source of truth: `ai-agent/llm/provider.py`
 2. `LLM_PROVIDER=local`
 3. `LLM_PROVIDER=auto` (tries providers in `LLM_PROVIDER_ORDER`)
 
-Default order is `local,openai`.
+Default: `LLM_PROVIDER=openai`, `LLM_PROVIDER_ORDER=local,openai` (so local is tried first when provider=auto).
 
 ## Required env for local mode
 
@@ -16,7 +17,49 @@ Default order is `local,openai`.
 export LLM_PROVIDER=local
 export LOCAL_LLM_BASE_URL=http://127.0.0.1:11434
 export LOCAL_LLM_API_MODE=chat
-export LOCAL_LLM_MODEL=qwen2.5-coder:7b
+export LOCAL_LLM_PROFILE=auto
+export LOCAL_LLM_MODEL=mistral:7b
+```
+
+## Model recommendation matrix
+
+For a 16GB GPU, use:
+
+1. `mistral:7b` (Apache-2.0) for strong general quality at 7B size.
+2. `qwen2.5-coder:7b` (Apache-2.0) for code-focused tasks.
+3. `starcoder2:7b` (BigCode-Rail) for strong 7B coding performance.
+
+Fallback for weak/no GPU:
+
+1. `gpt-j:6b` (Apache-2.0), if available in your runtime.
+2. `llama2:7b` as a practical CPU/GPU fallback option.
+
+`scripts/setup_local_llm_ollama.sh` supports `auto` model selection:
+
+- no NVIDIA GPU: `gpt-j:6b,llama2:7b,mistral:7b`
+- GPU <24GB VRAM: `mistral:7b,qwen2.5-coder:7b,starcoder2:7b`
+- GPU ≥24GB VRAM: `qwen2.5:14b,mistral:7b,qwen2.5-coder:7b`
+
+You can override these with:
+
+- `LOCAL_LLM_PROFILE` (`auto|gpu16|gpu24|cpu`)
+- `LOCAL_LLM_CPU_CANDIDATES`
+- `LOCAL_LLM_GPU16_CANDIDATES`
+- `LOCAL_LLM_GPU24_CANDIDATES`
+
+Decision flow:
+
+```mermaid
+flowchart LR
+    A[codingAI Start] --> B{GPU vorhanden?}
+    B -- Nein --> C[CPU-Only -> kleinere Modelle mit 4-Bit]
+    B -- Ja --> D{VRAM >= 24GB?}
+    D -- Ja --> E[Grosse Modelle möglich]
+    D -- Nein --> F[Modelle <= 7B oder quantisierte 13B]
+    E --> G[Empfohlen: qwen2.5:14b, mistral:7b]
+    F --> H[Empfohlen: mistral:7b, qwen2.5-coder:7b, starcoder2:7b]
+    G --> I[Deployment via Docker/Ollama]
+    H --> I
 ```
 
 ## Current VM status (2026-02-22 UTC)
@@ -36,7 +79,7 @@ export LOCAL_LLM_MODEL=qwen2.5-coder:7b
 ## Telemetry
 
 1. `LLM_TELEMETRY_ENABLED=true`
-2. `LLM_TELEMETRY_FILE=/home/codingai/ai-agent/logs/llm_telemetry.jsonl`
+2. `LLM_TELEMETRY_FILE` defaults to `paths.LOGS_DIR/llm_telemetry.jsonl`
 
 Counters are also exposed in runtime state under `state["llm_runtime"]["telemetry_counters"]`.
 
@@ -44,7 +87,7 @@ Counters are also exposed in runtime state under `state["llm_runtime"]["telemetr
 
 ```bash
 cd /home/codingai
-scripts/setup_local_llm_ollama.sh qwen2.5-coder:7b
+scripts/setup_local_llm_ollama.sh auto
 ```
 
 After bootstrap, validate:

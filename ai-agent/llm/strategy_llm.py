@@ -16,8 +16,11 @@ from llm.provider import (
     resolve_model,
     try_failover,
 )
+from llm.rules_instructions import with_rules_instructions
 
-load_dotenv("/home/codingai/ai-agent/.env")
+from paths import ENV_FILE
+
+load_dotenv(str(ENV_FILE))
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_429_MAX_RETRIES = int(os.getenv("OPENAI_429_MAX_RETRIES", "4"))
@@ -216,6 +219,7 @@ def pick_next_strategy(
         '  "confidence": number\n'
         "}\n"
     )
+    instructions = with_rules_instructions(instructions, repo=repo_name, require_json_only=True)
 
     user = {
         "repo_name": repo_name,

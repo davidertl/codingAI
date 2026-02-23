@@ -3,8 +3,7 @@ from datetime import datetime, timezone
 import requests
 
 from github.app_auth import get_installation_token
-
-OWNER = "davidertl"
+from github.config import get_github_owner
 
 
 def _headers():
@@ -48,9 +47,10 @@ def create_completed_check_run(
         payload["details_url"] = details_url
     if external_id:
         payload["external_id"] = str(external_id)[:255]
+    owner = get_github_owner()
 
     r = requests.post(
-        f"https://api.github.com/repos/{OWNER}/{repo}/check-runs",
+        f"https://api.github.com/repos/{owner}/{repo}/check-runs",
         headers=_headers(),
         json=payload,
     )

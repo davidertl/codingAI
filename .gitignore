@@ -22,12 +22,20 @@ ai-agent/github_app/*.pem
 .local/
 .npm/
 .vscode-server/
+.playwright/
+.playwright-cli/
+output/playwright/
+*.log
 
 # Python runtime artifacts
 **/__pycache__/
 *.pyc
 ai-agent/venv/
 ai-agent/state.json
+ai-agent/state.db
+ai-agent/.agent/
+ai-agent/logs/
+ai-agent/*.jsonl
 
 # Local cloned test repositories (do not sync)
 workspaces/

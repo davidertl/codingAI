@@ -2,12 +2,18 @@ import json
 import os
 import subprocess
 import time
+import copy
+import hashlib
 from datetime import datetime, timedelta, timezone
+
+from dotenv import load_dotenv
 
 from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
+from core.projects_store import get_project_push_gate_mode
 from core.test_runner import analyze_repo, run_tests
+from orchestrator.engine import OrchestratorEngine
 from github.checks_manager import create_completed_check_run
 from github.ci_status import get_pr_ci_status
 from github.git_api_commit import (
@@ -19,46 +25,62 @@ from github.git_api_commit import (
     get_default_branch,
     update_branch,
 )
-from github.issue_manager import create_issue, get_ai_issues
+from github.issue_manager import create_issue, get_ai_issues, upsert_issue_comment
 from github.pr_manager import (
     create_or_get_pr,
     get_open_pr_for_branch,
     has_ai_stop_comment,
     upsert_pr_comment,
 )
-from github.repo_manager import clone_or_update
+from github.repo_manager import (
+    clone_or_update,
+    prepare_job_worktree,
+    cleanup_jobs,
+    disk_usage_report,
+    list_installation_repos,
+)
+from github.app_auth import get_installation_token
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
+from paths import ENV_FILE, STATE_FILE
 
-AVAILABLE_REPOS = [
-    "KRT-leadtool",
-    "KRT-Com_Discord",
-]
+AVAILABLE_REPOS = []
 TARGET_REPOS_ENV = os.getenv("TARGET_REPOS", "").strip()
 if TARGET_REPOS_ENV:
     AVAILABLE_REPOS = [r.strip() for r in TARGET_REPOS_ENV.split(",") if r.strip()]
 
-STATE_FILE = "/home/codingai/ai-agent/state.json"
 POLL_INTERVAL = 300
 REPORT_MARKER = "<!-- codingai-test-report -->"
+FAILURE_COMMENT_MARKER = "<!-- codingai-failure-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
+ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+PAUSE_WINDOW_SECONDS = int(os.getenv("CODINGAI_PAUSE_WINDOW_SECONDS", "10") or "10")
+MAX_PAUSE_SECONDS = int(os.getenv("CODINGAI_MAX_PAUSE_SECONDS", "300") or "300")
+
+load_dotenv(str(ENV_FILE))
+ORCHESTRATOR_V2 = OrchestratorEngine()
 
 
 def load_state():
-    if not os.path.exists(STATE_FILE):
+    if not os.path.exists(str(STATE_FILE)):
         return {}
-    with open(STATE_FILE, "r") as f:
+    with open(str(STATE_FILE), "r") as f:
         return json.load(f)
 
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
+    with open(str(STATE_FILE), "w") as f:
         json.dump(state, f, indent=2)
 
 
 def choose_repo():
     if RUN_ALL_REPOS:
         return "__all__"
+
+    if not AVAILABLE_REPOS:
+        print("No repositories configured. Set TARGET_REPOS or configure GitHub installation access.")
+        exit(1)
 
     print("Select repository to work on:")
     for idx, repo in enumerate(AVAILABLE_REPOS):
@@ -92,6 +114,91 @@ def should_skip_due_to_cooldown(state, repo, issue_number):
 
 def _get_issue_state(state, repo, number):
     return state.setdefault(repo, {}).setdefault(str(number), {})
+
+
+def _pipeline_state(issue_state: dict) -> dict:
+    return issue_state.setdefault("pipeline", {})
+
+
+def _set_pipeline_stage(state, repo, number, stage: str, **extras):
+    issue_state = _get_issue_state(state, repo, number)
+    pipeline = _pipeline_state(issue_state)
+    pipeline["stage"] = stage
+    pipeline["updated_at"] = int(time.time())
+    for k, v in extras.items():
+        pipeline[k] = v
+    save_state(state)
+    return pipeline
+
+
+def _capture_diff(repo_path: str, max_chars: int = 20000):
+    try:
+        r = subprocess.run(
+            ["git", "diff"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        diff = r.stdout or ""
+    except Exception as e:
+        diff = f"diff capture failed: {e}"
+    return diff[:max_chars], len(diff)
+
+
+def _await_pause_window(repo: str, issue_number: str, *, initial_deadline: float):
+    """
+    Wait for pause window with optional user pause/cancel controls.
+    Respects MAX_PAUSE_SECONDS cap for user pauses.
+    """
+    start_ts = time.time()
+    while True:
+        now = time.time()
+        state_live = load_state()
+        issue_state_live = state_live.get(repo, {}).get(str(issue_number), {})
+        pipeline = issue_state_live.get("pipeline", {}) if isinstance(issue_state_live, dict) else {}
+
+        if pipeline.get("cancel_requested"):
+            _set_pipeline_stage(
+                state_live,
+                repo,
+                issue_number,
+                "canceled",
+                canceled_at=int(now),
+                cancel_reason=pipeline.get("cancel_reason", "user_cancel"),
+            )
+            raise RuntimeError("Pipeline canceled by user")
+
+        deadline = float(pipeline.get("pause_deadline", initial_deadline))
+        paused = bool(pipeline.get("paused", False))
+        paused_at = float(pipeline.get("paused_at", now))
+
+        if paused:
+            if now - paused_at > MAX_PAUSE_SECONDS:
+                # auto-resume after max pause window
+                pipeline["paused"] = False
+                pipeline["pause_requested"] = False
+                pipeline["pause_deadline"] = int(now + 2)
+                pipeline["updated_at"] = int(now)
+                save_state(state_live)
+            else:
+                time.sleep(1.0)
+                continue
+
+        if now >= deadline:
+            break
+
+        time.sleep(0.5)
+
+    elapsed = time.time() - start_ts
+    record_event(
+        "pause_window_complete",
+        repo=repo,
+        issue_number=issue_number,
+        status="continued",
+        duration_ms=int(elapsed * 1000),
+        data={"deadline": int(initial_deadline)},
+    )
 
 
 def _elapsed_ms(started_at):
@@ -181,23 +288,51 @@ def _evaluate_ci_gate(ci_summary, ci_policy):
     }
 
 
+def _failure_signature(summary, details):
+    payload = f"{summary}\n{details}".strip().lower()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_failure_comment_body(repo, issue_number, summary, details, failure_streak, followup_issue_number):
+    utc_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = [
+        FAILURE_COMMENT_MARKER,
+        "### ⚠️ CodingAI failure report",
+        "",
+        f"- Repository: `{repo}`",
+        f"- Source issue: `#{issue_number}`",
+        f"- Updated (UTC): `{utc_now}`",
+        f"- Summary: {str(summary).strip()[:280]}",
+        f"- Repeated failure streak: `{failure_streak}`",
+    ]
+    if followup_issue_number:
+        header.append(f"- Follow-up issue: `#{followup_issue_number}`")
+    body = "\n".join(header)
+    detail_block = (details or "").strip()[:8000]
+    return f"{body}\n\n```text\n{detail_block}\n```\n"
+
+
+def _build_followup_issue_body(parent_issue_number, summary, details):
+    detail_block = (details or "").strip()[:8000]
+    return (
+        f"Parent issue: #{parent_issue_number}\n\n"
+        "This follow-up issue was created automatically because the same failure repeated "
+        "and likely needs a longer fix pipeline.\n\n"
+        f"Summary: {str(summary).strip()[:280]}\n\n"
+        f"```text\n{detail_block}\n```"
+    )
+
+
 def _register_failure(state, repo, number, summary, details, *, policy, started_at=None):
     details = (details or "").strip()
     details = details[:12000]
     dry_run = bool(policy.get("dry_run", False))
-    publish_failure_issue = bool(policy.get("safety", {}).get("publish_failure_issue", True))
-    ai_stop_phrase = str(policy.get("safety", {}).get("ai_stop_phrase", "AI Stop"))
-    cooldown_seconds = int(policy.get("safety", {}).get("failure_cooldown_seconds", 6 * 60 * 60))
-
-    if publish_failure_issue and not dry_run:
-        try:
-            create_issue(
-                repo,
-                f"AI Failure for Issue #{number}",
-                f"{summary}\n\n```\n{details}\n```",
-            )
-        except Exception as e:
-            print(f"Failed to publish failure issue for {repo}#{number}: {e}")
+    safety_policy = policy.get("safety", {})
+    publish_failure_comment = bool(safety_policy.get("publish_failure_comment", True))
+    publish_failure_subissue = bool(safety_policy.get("publish_failure_subissue", False))
+    failure_subissue_threshold = int(safety_policy.get("failure_subissue_threshold", 3))
+    ai_stop_phrase = str(safety_policy.get("ai_stop_phrase", "AI Stop"))
+    cooldown_seconds = int(safety_policy.get("failure_cooldown_seconds", 6 * 60 * 60))
 
     issue_state = _get_issue_state(state, repo, number)
     issue_state["pr_created"] = bool(issue_state.get("pr_created", False))
@@ -207,6 +342,80 @@ def _register_failure(state, repo, number, summary, details, *, policy, started_
     issue_state["dry_run"] = dry_run
     issue_state["ai_stop_phrase"] = ai_stop_phrase
     issue_state["policy_refreshed_at"] = int(policy.get("_meta", {}).get("loaded_at", int(time.time())))
+
+    failure_signature = _failure_signature(summary, details)
+    previous_signature = str(issue_state.get("failure_signature", ""))
+    same_failure_streak = int(issue_state.get("same_failure_streak", 0))
+    if failure_signature and failure_signature == previous_signature:
+        same_failure_streak += 1
+    else:
+        same_failure_streak = 1
+    issue_state["failure_signature"] = failure_signature
+    issue_state["same_failure_streak"] = same_failure_streak
+    issue_state["failure_count"] = int(issue_state.get("failure_count", 0)) + 1
+
+    followup_issue_number = issue_state.get("failure_followup_issue_number")
+    if (
+        not dry_run
+        and publish_failure_subissue
+        and not followup_issue_number
+        and same_failure_streak >= max(1, failure_subissue_threshold)
+    ):
+        try:
+            created = create_issue(
+                repo,
+                f"[Follow-up] Issue #{number} repeatedly failing",
+                _build_followup_issue_body(number, summary, details),
+            )
+            followup_issue_number = created.get("number")
+            issue_state["failure_followup_issue_number"] = followup_issue_number
+            record_event(
+                "failure_followup_issue_created",
+                repo=repo,
+                issue_number=number,
+                status="ok",
+                data={"followup_issue_number": followup_issue_number, "same_failure_streak": same_failure_streak},
+            )
+        except Exception as e:
+            print(f"Failed to create failure follow-up issue for {repo}#{number}: {e}")
+
+    if publish_failure_comment and not dry_run:
+        comment_body = _build_failure_comment_body(
+            repo,
+            number,
+            summary,
+            details,
+            same_failure_streak,
+            followup_issue_number,
+        )
+        try:
+            comment = upsert_issue_comment(
+                repo,
+                number,
+                comment_body,
+                marker=FAILURE_COMMENT_MARKER,
+            )
+            issue_state["failure_comment_id"] = comment.get("id")
+            issue_state["failure_comment_url"] = comment.get("url")
+            record_event(
+                "failure_comment_upserted",
+                repo=repo,
+                issue_number=number,
+                status="ok",
+                data={
+                    "comment_id": comment.get("id"),
+                    "updated": bool(comment.get("updated", False)),
+                },
+            )
+        except Exception as e:
+            print(f"Failed to publish failure comment for {repo}#{number}: {e}")
+
+    pipeline = issue_state.get("pipeline")
+    if isinstance(pipeline, dict):
+        pipeline["stage"] = pipeline.get("stage", "failed_no_push")
+        pipeline["last_error"] = details[:500]
+        pipeline["updated_at"] = int(time.time())
+
     save_state(state)
 
     _record_issue_outcome(
@@ -219,7 +428,10 @@ def _register_failure(state, repo, number, summary, details, *, policy, started_
         data={
             "summary": str(summary)[:280],
             "error_excerpt": details[:1000],
-            "publish_failure_issue": publish_failure_issue and not dry_run,
+            "publish_failure_comment": publish_failure_comment and not dry_run,
+            "publish_failure_subissue": publish_failure_subissue and not dry_run,
+            "same_failure_streak": same_failure_streak,
+            "followup_issue_number": followup_issue_number,
         },
         persist=False,
     )
@@ -230,6 +442,19 @@ def _apply_strategy_memory_update(state, repo, test_report):
     if not isinstance(memory_update, dict):
         return
     state.setdefault("strategy_memory", {})[repo] = memory_update
+
+
+def _apply_error_memory_update(state, repo, test_report):
+    updates = test_report.get("error_memory_update")
+    if not isinstance(updates, dict) or not updates:
+        return
+    repo_map = state.setdefault("strategy_error_memory", {}).setdefault(repo, {})
+    repo_map.update(updates)
+
+
+def automation_enabled(state: dict, repo: str) -> bool:
+    auto = state.get("automation", {}).get(repo, {})
+    return bool(auto.get("enabled", False))
 
 
 def _mark_ai_stopped(state, repo, issue_number, pr_number, comment_id, phrase):
@@ -313,6 +538,17 @@ def _has_manual_approval(issue, policy):
         return True
 
     return False
+
+
+def _issue_with_manual_prompt(issue: dict, prompt: str) -> dict:
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        return issue
+    merged = dict(issue)
+    body = str(issue.get("body", "") or "")
+    prompt_block = f"\n\n---\nManual rerun prompt from UI:\n{prompt_text}\n---\n"
+    merged["body"] = f"{body}{prompt_block}".strip()
+    return merged
 
 
 def _utc_day_key():
@@ -409,7 +645,24 @@ def _resolve_branch_for_issue(state, repo, issue_number, policy):
 
 
 def _checkout_local_branch_at_sha(repo_path, branch, base_sha):
-    subprocess.run(["git", "checkout", "-B", branch, base_sha], cwd=repo_path, check=True)
+    checkout = subprocess.run(
+        ["git", "checkout", "-B", branch, base_sha],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    if checkout.returncode != 0:
+        combined = f"{checkout.stdout or ''}\n{checkout.stderr or ''}".lower()
+        branch_locked = "is already checked out at" in combined or "cannot force update the branch" in combined
+        if not branch_locked:
+            raise subprocess.CalledProcessError(
+                checkout.returncode,
+                checkout.args,
+                output=checkout.stdout,
+                stderr=checkout.stderr,
+            )
+        # Worktree-safe fallback: use detached HEAD at the same base SHA.
+        subprocess.run(["git", "checkout", "--detach", base_sha], cwd=repo_path, check=True)
     subprocess.run(["git", "reset", "--hard", base_sha], cwd=repo_path, check=True)
 
 
@@ -587,6 +840,11 @@ def process_issue(repo, issue, state, policy=None):
     number = str(issue["number"])
     issue_started = time.time()
     issue_state = _get_issue_state(state, repo, number)
+    force_reprocess_once = bool(issue_state.pop("force_reprocess_once", False))
+    force_bypass_cooldown_once = bool(issue_state.pop("force_bypass_cooldown_once", False))
+    manual_prompt = str(issue_state.get("manual_prompt", "") or "").strip()
+    issue_for_llm = _issue_with_manual_prompt(issue, manual_prompt)
+    job_id = f"{int(issue_started)}-{issue_state.get('branch_iteration', 0)}"
     pr_policy = policy.get("pr", {})
     patch_policy = policy.get("patch", {})
     strategy_policy = policy.get("strategy", {})
@@ -615,6 +873,14 @@ def process_issue(repo, issue, state, policy=None):
         issue_number=number,
         status="started",
         data={"dry_run": dry_run},
+    )
+    _set_pipeline_stage(
+        state,
+        repo,
+        number,
+        "queued",
+        job_id=job_id,
+        started_at=int(issue_started),
     )
 
     # resolve active/open PR branch first (iteration naming strategy)
@@ -653,6 +919,7 @@ def process_issue(repo, issue, state, policy=None):
 
     if not _has_manual_approval(issue, policy):
         issue_state["pending_manual_approval"] = True
+        _set_pipeline_stage(state, repo, number, "needs_user_input", reason="manual_approval_required")
         _record_issue_outcome(
             state,
             repo,
@@ -668,7 +935,11 @@ def process_issue(repo, issue, state, policy=None):
 
     if dry_run:
         issue_updated_at = str(issue.get("updated_at", ""))
-        if issue_updated_at and issue_updated_at == str(issue_state.get("dry_run_source_issue_updated_at", "")):
+        if (
+            not force_reprocess_once
+            and issue_updated_at
+            and issue_updated_at == str(issue_state.get("dry_run_source_issue_updated_at", ""))
+        ):
             _record_issue_outcome(
                 state,
                 repo,
@@ -697,7 +968,11 @@ def process_issue(repo, issue, state, policy=None):
             return
 
         issue_updated_at = str(issue.get("updated_at", ""))
-        if issue_updated_at and issue_updated_at == str(issue_state.get("source_issue_updated_at", "")):
+        if (
+            not force_reprocess_once
+            and issue_updated_at
+            and issue_updated_at == str(issue_state.get("source_issue_updated_at", ""))
+        ):
             _record_issue_outcome(
                 state,
                 repo,
@@ -784,7 +1059,7 @@ def process_issue(repo, issue, state, policy=None):
                         return
 
     # Cooldown
-    if should_skip_due_to_cooldown(state, repo, number):
+    if not force_bypass_cooldown_once and should_skip_due_to_cooldown(state, repo, number):
         _record_issue_outcome(
             state,
             repo,
@@ -841,27 +1116,70 @@ def process_issue(repo, issue, state, policy=None):
             return
 
     print(f"\nProcessing issue #{number} on branch {branch}")
-
-    repo_path = clone_or_update(repo)
+    _set_pipeline_stage(state, repo, number, "analyzing", active_branch=branch)
 
     try:
         default_branch = get_default_branch(repo)
         branch_sha = get_branch_sha(repo, branch)
         base_sha = branch_sha or get_branch_sha(repo, default_branch)
         repo_strategy_memory = state.get("strategy_memory", {}).get(repo, {})
+        repo_error_memory = state.get("strategy_error_memory", {}).get(repo, {})
 
         if not base_sha:
             raise RuntimeError("Could not resolve base SHA for patch pipeline.")
+
+        repo_path = prepare_job_worktree(repo, job_id=job_id, base_sha=base_sha)
 
         # Ensure local tests run against the exact commit parent we will use for API commit.
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
         repo_analysis = analyze_repo(repo_path)
+        if ORCHESTRATOR_V2_ENABLED:
+            _set_pipeline_stage(state, repo, number, "orchestrator_v2_preflight", active_branch=branch)
+            v2_result = ORCHESTRATOR_V2.run_issue(
+                repo_name=repo,
+                issue=issue_for_llm,
+                repo_path=repo_path,
+                repo_analysis=repo_analysis,
+                strategy_policy=strategy_policy,
+            )
+            issue_state["orchestrator_v2_run_id"] = str(v2_result.run_id)
+            issue_state["orchestrator_v2_status"] = str(v2_result.run_outcome.status)
+            issue_state["orchestrator_v2_attempts"] = int(v2_result.run_outcome.attempts_count or 0)
+            issue_state["orchestrator_v2_summary"] = str(v2_result.run_outcome.summary or "")[:2000]
+            issue_state["orchestrator_v2_used_redundancy"] = bool(v2_result.used_redundancy)
+            issue_state["orchestrator_v2_success_criteria"] = v2_result.run_outcome.success_criteria
+            save_state(state)
+            if v2_result.run_outcome.status != "success":
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Orchestrator V2 preflight failed for issue #{number}.",
+                    v2_result.run_outcome.error_reason or v2_result.run_outcome.summary,
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+            record_event(
+                "orchestrator_v2_preflight_passed",
+                repo=repo,
+                issue_number=number,
+                status="ok",
+                data={
+                    "run_id": v2_result.run_id,
+                    "attempts": int(v2_result.run_outcome.attempts_count or 0),
+                    "used_redundancy": bool(v2_result.used_redundancy),
+                },
+            )
+            _checkout_local_branch_at_sha(repo_path, branch, base_sha)
+
+        _set_pipeline_stage(state, repo, number, "patching", active_branch=branch)
         patch_started = time.time()
         patch_result = propose_patch_ops(
             repo_path=repo_path,
             repo_name=repo,
-            issue=issue,
+            issue=issue_for_llm,
             repo_analysis=repo_analysis,
             max_ops=int(patch_policy.get("max_patch_ops", 20)),
         )
@@ -920,6 +1238,35 @@ def process_issue(repo, issue, state, policy=None):
             )
             return
 
+        diff_text, diff_len = _capture_diff(repo_path)
+        pause_deadline = time.time() + PAUSE_WINDOW_SECONDS
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "pause_window",
+            diff=diff_text,
+            diff_length=diff_len,
+            pause_deadline=int(pause_deadline),
+            paused=False,
+            pause_requested=False,
+            cancel_requested=False,
+        )
+        try:
+            _await_pause_window(repo, number, initial_deadline=pause_deadline)
+        except RuntimeError as cancel_err:
+            _register_failure(
+                state,
+                repo,
+                number,
+                f"Pipeline canceled for issue #{number}.",
+                str(cancel_err),
+                policy=policy,
+                started_at=issue_started,
+            )
+            return
+
+        _set_pipeline_stage(state, repo, number, "testing")
         print("Patch applied locally. Running tests on patched repository...")
         confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
         strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
@@ -933,6 +1280,7 @@ def process_issue(repo, issue, state, policy=None):
             repo_name=repo,
             max_attempts=strategy_max_attempts,
             strategy_memory=repo_strategy_memory,
+            error_memory=repo_error_memory,
             min_confidence_for_switch=confidence_threshold,
             strategy_quarantine_threshold=strategy_quarantine_threshold,
             strategy_quarantine_seconds=strategy_quarantine_seconds,
@@ -973,7 +1321,7 @@ def process_issue(repo, issue, state, policy=None):
             test_patch_result = propose_test_patch_ops(
                 repo_path=repo_path,
                 repo_name=repo,
-                issue=issue,
+                issue=issue_for_llm,
                 repo_analysis=repo_analysis,
                 base_patch_ops=patch_ops,
                 max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
@@ -1081,6 +1429,7 @@ def process_issue(repo, issue, state, policy=None):
                 )
 
         _apply_strategy_memory_update(state, repo, test_report)
+        _apply_error_memory_update(state, repo, test_report)
 
         if not success:
             _register_failure(
@@ -1093,6 +1442,14 @@ def process_issue(repo, issue, state, policy=None):
                 started_at=issue_started,
             )
             return
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "passed",
+            test_output_excerpt=str(output or "")[:2000],
+            attempts=attempts_count,
+        )
 
         if dry_run:
             issue_state["active_branch"] = branch
@@ -1114,6 +1471,13 @@ def process_issue(repo, issue, state, policy=None):
                 "would_publish_check_run": bool(pr_policy.get("enable_github_checks", True)),
                 "would_upsert_pr_comment": True,
             }
+            _set_pipeline_stage(
+                state,
+                repo,
+                number,
+                "failed_no_push" if not success else "passed",
+                dry_run=True,
+            )
             _record_issue_outcome(
                 state,
                 repo,
@@ -1127,6 +1491,7 @@ def process_issue(repo, issue, state, policy=None):
             return
 
         print("Patched tests passed. Creating commit via GitHub API...")
+        _set_pipeline_stage(state, repo, number, "pushing")
 
         # Create branch remotely only after patch and tests passed.
         if not branch_sha:
@@ -1222,8 +1587,19 @@ def process_issue(repo, issue, state, policy=None):
         issue_state["check_run_url"] = check_run_url
         issue_state["report_comment_id"] = comment_result.get("id")
         issue_state["source_issue_updated_at"] = str(issue.get("updated_at", ""))
+        if manual_prompt:
+            issue_state["last_manual_prompt_used_at"] = int(time.time())
         issue_state["retry_after"] = 0
         issue_state["dry_run"] = False
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "pr_created",
+            pr_number=pr_info["number"],
+            pr_url=pr_info["url"],
+            check_run_url=check_run_url,
+        )
         _record_issue_outcome(
             state,
             repo,
@@ -1253,14 +1629,14 @@ def process_issue(repo, issue, state, policy=None):
         )
 
 
-def _run_repo_cycle(repo):
+def _run_repo_cycle(repo, target_issue_number: int | None = None):
     cycle_started = time.time()
     cycle_status = "ok"
     issues_count = 0
     record_event("repo_cycle_start", repo=repo, status="started")
 
     state = load_state()
-    repo_policy = get_repo_policy(repo)
+    repo_policy = get_repo_policy_config(repo, force=False, apply_project_push_gate=True)
 
     llm_ready = ensure_llm_ready(force=False)
     llm_runtime = get_llm_runtime_status()
@@ -1296,15 +1672,30 @@ def _run_repo_cycle(repo):
     else:
         try:
             issues = get_ai_issues(repo)
-            issues_count = len(issues)
         except Exception as e:
             cycle_status = "issues_fetch_failed"
             print(f"Failed to fetch issues for {repo}: {e}")
         else:
-            if not issues:
-                cycle_status = "no_issues"
-            for issue in issues:
+            selected_issues = list(issues or [])
+            if target_issue_number is not None:
+                selected_issues = [
+                    i for i in selected_issues
+                    if int(i.get("number", -1) or -1) == int(target_issue_number)
+                ]
+
+            issues_count = len(selected_issues)
+            if not selected_issues:
+                if target_issue_number is not None:
+                    cycle_status = "target_issue_not_found"
+                else:
+                    cycle_status = "no_issues"
+            for issue in selected_issues:
                 process_issue(repo, issue, state, policy=repo_policy)
+
+            if target_issue_number is not None and not selected_issues:
+                print(f"Target issue #{target_issue_number} not found in ai-fix queue for {repo}.")
+            elif not selected_issues:
+                cycle_status = "no_issues"
 
     cycle_duration_ms = _elapsed_ms(cycle_started) or 0
     inc_counter("codingai_repo_cycles_total", labels={"repo": repo, "status": cycle_status})
@@ -1322,18 +1713,69 @@ def _run_repo_cycle(repo):
         duration_ms=cycle_duration_ms,
         data={"issues_count": issues_count},
     )
+    cleanup_jobs()
 
 
 def run_repo_cycle_once(repo):
     _run_repo_cycle(repo)
 
 
+def run_repo_issue_once(repo, issue_number):
+    _run_repo_cycle(repo, target_issue_number=int(issue_number))
+
+
 def get_available_repos():
-    return list(AVAILABLE_REPOS)
+    def _installation_repos():
+        try:
+            token = get_installation_token()
+            repos = list_installation_repos(token)
+            cleaned = []
+            for r in repos:
+                name = str(r or "").strip()
+                if name:
+                    cleaned.append(name)
+            return cleaned
+        except Exception as e:
+            record_event(
+                "installation_repos_error",
+                status="warn",
+                data={"error": str(e)[:200]},
+            )
+            return []
+
+    aggregated = []
+    seen = set()
+
+    for src in (_installation_repos(), AVAILABLE_REPOS):
+        for repo in src:
+            name = str(repo or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            aggregated.append(name)
+
+    return aggregated
 
 
-def get_repo_policy_config(repo, force=False):
-    return get_repo_policy(repo, force=force)
+def _apply_project_push_gate_override(repo: str, policy: dict) -> dict:
+    if not isinstance(policy, dict):
+        return policy
+    out = copy.deepcopy(policy)
+    approval = out.setdefault("approval", {})
+    default_mode = "manual" if bool(approval.get("required", False)) else "auto_10s"
+    mode = get_project_push_gate_mode(repo, default=default_mode)
+    approval["required"] = mode == "manual"
+    meta = out.setdefault("_meta", {})
+    if isinstance(meta, dict):
+        meta["project_push_gate_mode"] = mode
+    return out
+
+
+def get_repo_policy_config(repo, force=False, apply_project_push_gate=True):
+    policy = get_repo_policy(repo, force=force)
+    if apply_project_push_gate:
+        return _apply_project_push_gate_override(repo, policy)
+    return policy
 
 
 def get_policies_config(force=False):
@@ -1352,6 +1794,18 @@ def loop_all(repos):
             print(f"\n== Repo cycle: {repo} ==")
             _run_repo_cycle(repo)
         time.sleep(POLL_INTERVAL)
+
+
+def self_checks():
+    """Run lightweight self-checks (disk usage, job cleanup)."""
+    disk = disk_usage_report()
+    record_event(
+        "self_check_disk",
+        repo=None,
+        status="warn" if disk.get("warn") else "ok",
+        data=disk,
+    )
+    cleanup_jobs()
 
 
 if __name__ == "__main__":

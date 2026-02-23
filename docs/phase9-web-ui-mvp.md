@@ -1,50 +1,39 @@
-# Phase 9 Web UI MVP
+# Phase 9: Web UI MVP
+Version: experimental-0.22.0
 
-Source: `ai-agent/service/static/index.html`
+## Scope
 
-## Purpose
+Single-page dashboard served by the API process for operating and observing CodingAI.
 
-Provide a lightweight operator dashboard on top of Phase 8 APIs.
+## Main UI areas
 
-## Access
+1. Header/KPIs:
+   - LLM readiness
+   - Worker count
+   - Active provider
+   - Server time
+2. Setup card:
+   - GitHub owner/app/installation form
+   - PEM upload form
+   - Setup status indicators
+3. Projects card:
+   - Installation repo list
+   - Enable/disable controls
+4. Repo worker controls:
+   - Select repo
+   - Start/stop worker
+   - Run once
+   - Automation toggle
+5. Summary panes:
+   - Open AI-fix queue
+   - Tracked issue pipeline/test state
 
-1. Start API: `scripts/run_control_api.sh`
-2. Open: `http://127.0.0.1:8000/` (or `/ui`)
+## Current interaction model
 
-## Available views and controls
+1. Polling refresh loop (7s) for health, summaries, projects, setup.
+2. Inline action toasts for success/failure feedback.
+3. Tracked issue controls for diff/pause/resume/cancel when issue state exists.
 
-1. Global status cards:
-   - API health
-   - LLM readiness/provider
-   - active worker count
-2. Repo controls:
-   - select repo
-   - start worker
-   - stop worker
-   - run once
-   - manual refresh
-3. Queue panel:
-   - open `ai-fix` issues for selected repo
-4. Tracked issue panel:
-   - status from `state.json`
-   - PR/check links
-   - patch/test metadata
-   - AI-stop/manual-approval indicators when present
-5. Governance signals:
-   - policy enabled/disabled
-   - live vs dry-run mode
-   - daily/weekly PR budget counters
-6. CI observability signals:
-   - per-issue CI gate status/reason in tracked issue cards
-   - last processing duration per issue
+## Verification
 
-## Refresh model
-
-1. Polling-based updates (no websocket yet).
-2. Backend responses come from:
-   - `/health`
-   - `/repos`
-   - `/repo/{repo}/summary`
-   - `/run/repo/{repo}`
-   - `/stop/repo/{repo}`
-   - `/run-once/repo/{repo}`
+Dashboard controls are now exercised by the web strategy (`web_live_playwright`) in deterministic dashboard mode.

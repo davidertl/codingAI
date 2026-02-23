@@ -1,55 +1,36 @@
-# Phase 8 API Control Plane
+# Phase 8: API Control Plane
+Version: experimental-0.22.0
 
-Source: `ai-agent/service/api.py`
+## Scope
 
-## Purpose
+FastAPI service exposing operational control, state visibility, and governance/observability endpoints for CodingAI workers.
 
-Expose agent execution and state over HTTP with per-repo managed workers.
-
-## Endpoints
+## Core endpoints
 
 1. `GET /health`
 2. `GET /repos`
-3. `GET /state`
-4. `GET /workers`
-5. `GET /queue/{repo}`
+3. `POST /run/repo/{repo}`
+4. `POST /stop/repo/{repo}`
+5. `POST /run-once/repo/{repo}`
 6. `GET /repo/{repo}/summary`
 7. `GET /policies`
 8. `GET /policy/{repo}`
 9. `GET /metrics`
-10. `GET /metrics/json`
-11. `GET /events`
-12. `GET /ci/{repo}/{pr_number}`
-13. `POST /run/repo/{repo}`
-14. `POST /run-once/repo/{repo}`
-15. `POST /stop/repo/{repo}`
-16. `GET /` and `GET /ui` (serve dashboard HTML)
-17. `GET /ui/static/*` (dashboard assets)
+10. `GET /events`
 
-## Worker model
+## Setup/operations extensions
 
-1. One background thread per started repo.
-2. Each cycle runs `main.run_repo_cycle_once(repo)`.
-3. Worker snapshots include cycle timing, error text, and cycle count.
-4. `SERVICE_POLL_INTERVAL_SECONDS` controls sleep between cycles.
+1. `GET /setup/status`
+2. `GET /setup/values`
+3. `POST /setup/github`
+4. `POST /setup/pem`
+5. `GET /projects`
+6. `POST /projects/{repo}/enable`
+7. `POST /projects/{repo}/disable`
+8. `POST /self-checks`
 
-## Run
+## Runtime behavior
 
-```bash
-cd /home/codingai
-scripts/run_control_api.sh
-```
-
-## Example calls
-
-```bash
-curl -s http://127.0.0.1:8000/health
-curl -s -X POST http://127.0.0.1:8000/run/repo/KRT-leadtool
-curl -s http://127.0.0.1:8000/repo/KRT-leadtool/summary
-curl -s -X POST http://127.0.0.1:8000/stop/repo/KRT-leadtool
-```
-
-## Notes
-
-1. Control plane currently has no auth layer; keep deployment private.
-2. `state.json` remains the runtime persistence store.
+1. Worker lifecycle is managed by `WorkerManager`.
+2. Automation scheduler starts repo workers based on persisted automation toggles.
+3. State is persisted via `state.json` (planned migration to SQLite is tracked in `docs/implementation-plan.md`).

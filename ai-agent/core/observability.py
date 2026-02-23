@@ -5,6 +5,8 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
+from paths import LOGS_DIR
+
 _LOCK = threading.Lock()
 _COUNTERS = {}
 _GAUGES = {}
@@ -12,7 +14,10 @@ _SUMMARIES = {}
 
 _TRUTHY = {"1", "true", "yes", "on"}
 EVENT_LOG_ENABLED = os.getenv("OBS_EVENT_LOG_ENABLED", "true").strip().lower() in _TRUTHY
-EVENT_LOG_FILE = os.getenv("OBS_EVENT_LOG_FILE", "/home/codingai/ai-agent/logs/events.jsonl").strip()
+EVENT_LOG_FILE = os.getenv(
+    "OBS_EVENT_LOG_FILE",
+    str((LOGS_DIR / "events.jsonl").resolve()),
+).strip()
 
 
 def _utc_now_iso():
@@ -135,6 +140,34 @@ def _format_labels(labels):
     return "{" + ",".join(parts) + "}"
 
 
+# Redaction helpers for secrets in logs/metrics
+SENSITIVE_KEYS = {
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "openai-api-key",
+    "bearer",
+    "token",
+    "refresh_token",
+    "access_token",
+}
+
+
+def redact_dict(data: dict) -> dict:
+    out = {}
+    for k, v in data.items():
+        if isinstance(k, str) and k.lower() in SENSITIVE_KEYS:
+            out[k] = "***"
+        elif isinstance(v, str) and len(v) > 200:
+            out[k] = v[:200] + "..."
+        elif isinstance(v, dict):
+            out[k] = redact_dict(v)
+        else:
+            out[k] = v
+    return out
+
+
 def get_metrics_snapshot():
     with _LOCK:
         counters = {
@@ -215,3 +248,36 @@ def read_recent_events(limit=100, repo=None, event=None):
         return []
 
     return list(out)
+SENSITIVE_KEYS = {
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "openai-api-key",
+    "bearer",
+    "token",
+    "refresh_token",
+    "access_token",
+}
+
+
+def _redact(value: str) -> str:
+    if not value:
+        return value
+    if len(value) <= 8:
+        return "***"
+    return value[:2] + "***" + value[-2:]
+
+
+def redact_dict(data: dict) -> dict:
+    out = {}
+    for k, v in data.items():
+        if isinstance(k, str) and k.lower() in SENSITIVE_KEYS:
+            out[k] = "***"
+        elif isinstance(v, str) and len(v) > 120:
+            out[k] = v[:120] + "..."
+        elif isinstance(v, dict):
+            out[k] = redact_dict(v)
+        else:
+            out[k] = v
+    return out

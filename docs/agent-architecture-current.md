@@ -1,81 +1,48 @@
 # Agent Architecture (Current)
+Version: experimental-0.22.0
 
-## Core pipeline
+## Core pipeline (current)
 
-`ai-agent/main.py` drives a per-repo cycle:
+- `ai-agent/main.py` orchestrates per-repo cycles:
+  1) Ensure LLM ready (`llm/provider.py`), load policy (`core/policy.py`).
+  2) Fetch issues labeled `ai-fix` (GitHub App).
+  3) Gates: AI Stop, manual approval, cooldown, PR caps, CI gate (iterative updates).
+  4) Resolve iteration branch name; generate patch ops (`llm/patch_llm.py`).
+  5) Apply patch locally; run adaptive tests (`core/test_runner.py`), optional test-patch fallback.
+  6) If tests pass and not dry-run: Git Data API commit/branch update (`github/git_api_commit.py`), PR create/reuse, report comment + optional check-run.
 
-1. Validate LLM readiness (`llm/provider.py`).
-2. Fetch open GitHub issues labeled `ai-fix`.
-3. For each issue:
-   - enforce safety gates (AI Stop, manual approval, cooldown, daily PR cap),
-   - load repo policy (budgets, branch template, dry-run mode),
-   - enforce optional CI gate before iterative PR updates,
-   - resolve/create iteration branch naming (`ai/issue-<n>-iter-<k>`),
-   - generate structured patch ops with LLM (`llm/patch_llm.py`),
-   - run staged test execution with optional test-patch fallback,
-   - apply patch locally and run adaptive tests (`core/test_runner.py`),
-   - commit via Git Data API only on pass (`github/git_api_commit.py`) unless dry-run,
-   - create/reuse PR, upsert PR report comment, optionally publish check-run.
+## Module map (current)
 
-## Module map
+- `paths.py`: resolves repo root, logs, state, env, pem, workspaces; removes hardcoded `/home`; exposes `setup_status()` and central PEM/env paths for setup UI.
+- `core/policy.py`: env + policy files merge/normalize; per-repo overrides.
+- `core/test_runner.py`: repo analysis; docker/dotnet/node strategies; LLM-guided strategy switching; strategy memory/quarantine; error extraction.
+- `core/research.py`: SearxNG-backed search with TTL cache and optional LLM summary.
+- `strategy_error_memory`: persisted mapping from error fingerprint → preferred strategy to bias future runs.
+- `core/observability.py`: counters/gauges/summaries; JSONL events; `/metrics`, `/events`; redaction for sensitive keys in event payloads.
+- `llm/provider.py`: provider chain (openai/local/auto), health checks, failover, telemetry; resolves env from `paths.ENV_FILE`.
+- `llm/patch_llm.py`: patch + optional test-patch generation with schema validation.
+- `llm/strategy_llm.py`: next-strategy selector with retry/backoff.
+- `github/app_auth.py`: GitHub App JWT + installation token; PEM path via `paths.GITHUB_APP_PEM_FILE`.
+- `github/git_api_commit.py`: blob/tree/commit/ref without git push.
+- `github/issue_manager.py`: issue polling and failure comment upsert on source issues; optional follow-up issue creation after repeated failures.
+- `github/pr_manager.py`: PR create/reuse, AI Stop detection, comment upsert.
+- `github/checks_manager.py`: GitHub Checks API publish.
+- `github/ci_status.py`: combined status + check-runs for CI gate.
+- `github/repo_manager.py`: shared mirrors under `workspaces/repos`, per-job worktrees under `workspaces/jobs/{repo}/{job_id}`, TTL cleanup; lists installation repos for projects UI.
+- `service/api.py`: FastAPI control plane, workers, metrics/events/CI endpoints, setup endpoints (`/setup/status`, `/setup/github`, `/setup/pem`), projects enable/disable (`/projects*`), automation toggles (`/automation/*`), pipeline controls (`/pipeline/{repo}/{issue}/pause|resume|cancel|diff`), serves dashboard (`service/static/index.html`).
+- `service/static/index.html`: Dashboard wiring for setup status/PEM upload, installation repo list with enable/disable, worker controls, queue/tracked issue views, pipeline diff/pause/resume/cancel buttons per tracked issue.
+- `docker-compose.yaml`: binds `.env` and `github_app/` into the service container read-write to support setup UI writes.
 
-1. `main.py`
-   - orchestration, safety policy, state writes, patch/test/PR workflow.
-2. `core/test_runner.py`
-   - repo analysis, strategy execution, LLM-guided fallback, memory scoring.
-3. `core/policy.py`
-   - policy-file loading, repo override merge, normalization.
-4. `core/observability.py`
-   - structured event logging and metrics registry/export.
-5. `core/test_runner.py` autonomy internals include:
-   - strategy memory scoring with recency decay
-   - strategy quarantine cooldown behavior
-6. `llm/provider.py`
-    - provider selection (`openai/local/auto`), health checks, failover, telemetry.
-7. `llm/strategy_llm.py`
-    - next-strategy selector with retry/backoff behavior.
-8. `llm/patch_llm.py`
-    - patch and optional test-patch generation with strict schema validation.
-9. `github/app_auth.py`
-    - GitHub App JWT + installation token lifecycle.
-10. `github/git_api_commit.py`
-    - blob/tree/commit/ref APIs, multi-file tree assembly.
-11. `github/issue_manager.py`
-    - issue polling and failure issue creation.
-12. `github/pr_manager.py`
-    - PR create/reuse, comment upsert, AI Stop detection.
-13. `github/checks_manager.py`
-    - completed check-run publication.
-14. `github/ci_status.py`
-    - combined status + check-run aggregation for CI gate decisions.
-15. `service/api.py`
-    - FastAPI control plane and worker manager.
-16. `service/static/index.html`
-    - web dashboard for operations and visibility.
+## State model (runtime, JSON)
 
-## State model (runtime)
+- File: `state.json` (path from `paths.STATE_FILE`), not in git.
+- Per issue (`state[repo][issue]`): `active_branch`, `pr_created`, `pr_number/url`, `last_status`, `last_error`, `retry_after`, `patch_ops_count/confidence`, `report_comment_id`, `check_run_url`, `pending_manual_approval`, `ai_stopped*`, `test_patch_*`, strategy thresholds, durations.
+- Global: `daily_pr_counts`, `weekly_pr_counts`, `strategy_memory`, `pr_controls`, `llm_runtime`, `policy_runtime`.
 
-`state.json` is runtime-generated (ignored in Git). Common keys:
+## Safety properties (current)
 
-1. Per issue (`state[repo][issue_number]`):
-   - `active_branch`, `pr_created`, `pr_number`, `pr_url`
-   - `last_status`, `last_error`, `retry_after`
-   - `patch_ops_count`, `patch_confidence`
-   - `report_comment_id`, `check_run_url`
-   - `pending_manual_approval`
-   - `ai_stopped`, `ai_stopped_at`, `ai_stop_reason`
-2. Global/runtime:
-   - `daily_pr_counts`
-   - `strategy_memory`
-   - `pr_controls`
-   - `llm_runtime`
-
-## Safety properties
-
-1. Commit path does not use git push/force push; uses GitHub Git Data API ref updates.
-2. Remote branch is created only after local patched tests pass.
-3. AI Stop comment disables further processing for the associated issue/PR.
-4. Optional manual approval can gate all issue execution.
-5. Daily PR cap prevents unbounded PR creation.
-6. Weekly PR cap and dry-run mode are policy-controlled per repository.
-7. CI gate policy can block iterative PR updates when checks are pending/failing.
+- Uses GitHub Git Data API (no git push/force); branch created only after tests pass.
+- AI Stop via PR comments halts processing.
+- Manual approval/dry-run/policy caps enforced before writes.
+- CI gate can block iterative PR updates.
+- Patch/test failures keep changes local (no remote writes).

@@ -1,79 +1,81 @@
 # Current State
+Version: experimental-0.22.0
 
-This reflects the verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-22 (UTC).
+This reflects verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-23 (UTC).
 
-## Phase status (1-12)
+## Phase status (1-22)
 
-1. `Phase 1 - Real patch generation`: Implemented  
-   - LLM patch ops (`llm/patch_llm.py`)  
-   - Local patch apply before test (`main.py` `_apply_patch_ops_locally`)  
-   - Multi-file Git Data API tree commit (`github/git_api_commit.py` `build_tree_from_patchops`)
-2. `Phase 2 - PR comment automation`: Implemented  
-   - Structured test report body (`main.py` `_build_pr_test_comment`)  
-   - Upsert comment by marker (`github/pr_manager.py` `upsert_pr_comment`)
-3. `Phase 3 - AI Stop`: Implemented  
-   - PR comment scan for stop phrase (`github/pr_manager.py` `has_ai_stop_comment`)  
-   - Per-issue and global stop control state (`main.py` `_mark_ai_stopped`, `state["pr_controls"]`)
-4. `Phase 4 - LLM stability`: Implemented  
-   - 429/5xx backoff + retry (`llm/strategy_llm.py` `_post_with_backoff`)  
-   - Relevant-error extraction (`core/test_runner.py` `_extract_relevant_error_lines`)  
-   - Confidence-gated switching + strategy memory/quarantine (`core/test_runner.py`)
-5. `Phase 5 - Safe autonomous mode`: Implemented  
-   - Manual-approval gating (`main.py` `_has_manual_approval`)  
-   - Branch iteration naming and PR auto-update controls (`main.py` `_resolve_branch_for_issue`)  
-   - Policy-driven daily/weekly new-PR budgets (`policy.pr.max_per_day`, `policy.pr.max_per_week`)
-6. `Phase 6 - Advanced features (selected)`: Partially implemented  
-   - Optional LLM-generated test patch ops (`llm/patch_llm.py` `propose_test_patch_ops`)  
-   - Ephemeral Docker Compose strategy (`core/test_runner.py` `strat_docker_compose_ephemeral_up`)  
-   - GitHub Checks API publication (`github/checks_manager.py`)
-7. `Phase 7 - Local LLM operationalization`: Implemented  
-   - Provider health checks, fallback chain, request telemetry (`llm/provider.py`)
-8. `Phase 8 - Service/API layer`: Implemented  
-   - FastAPI control plane + managed worker threads (`service/api.py`)
-9. `Phase 9 - Web UI MVP`: Implemented  
-   - Dashboard served from API process (`service/static/index.html`, `service/api.py`)
-10. `Phase 10 - Governance/safety expansion`: Implemented  
-   - Repo policy files + resolver (`config/policies/*.json`, `core/policy.py`)  
-   - Dry-run mode that executes locally but skips GitHub writes (`main.py`)  
-   - Budget/accounting state (`state["daily_pr_counts"]`, `state["weekly_pr_counts"]`)
-11. `Phase 11 - Observability + CI integration`: Implemented  
-   - Structured event logging + metric registry (`core/observability.py`)  
-   - Metrics/events/CI endpoints (`service/api.py`)  
-   - CI-aware gating before iterative PR updates (`main.py`, `github/ci_status.py`)
-12. `Phase 12 - Advanced autonomy improvements`: Implemented  
-   - Strategy memory decay + quarantine (`core/test_runner.py`)  
-   - Policy-driven autonomy knobs (`core/policy.py`, `config/policies/default.json`)  
-   - Staged test-patch fallback with confidence gating (`main.py`)
+1. `Phase 1 - Real patch generation`: Implemented
+2. `Phase 2 - PR comment automation`: Implemented
+3. `Phase 3 - AI Stop`: Implemented
+4. `Phase 4 - LLM stability`: Implemented
+5. `Phase 5 - Safe autonomous mode`: Implemented
+6. `Phase 6 - Advanced testing features`: Partially implemented
+7. `Phase 7 - Local LLM operationalization`: Implemented
+8. `Phase 8 - API control plane`: Implemented
+9. `Phase 9 - Web UI MVP`: Implemented
+10. `Phase 10 - Governance/safety expansion`: Implemented
+11. `Phase 11 - Observability + CI integration`: Implemented
+12. `Advanced autonomy improvements`: Implemented
+13. `Phase 13 - Setup & installer`: Implemented
+14. `Phase 14 - Projects (repo discovery)`: Implemented
+15. `Phase 15 - Chat + Repo UX`: Pending
+16. `Phase 16 - Issue -> Patch -> Diff -> Pause -> Test -> PR`: Implemented
+17. `Phase 17 - Containerized execution / job worktrees`: Implemented
+18. `Phase 18 - Research (local-first)`: Implemented (runtime depends on reachable Searx endpoint)
+19. `Phase 19 - Memory & reuse`: Implemented
+20. `Phase 20 - Secrets & safety (local)`: Partially implemented
+21. `Phase 21 - Autonomous mode & self-tasks`: Partially implemented
+22. `Phase 22 - Deterministic orchestration V2`: Partially implemented (contracts/roles/engine/API implemented; currently wired as preflight gate via feature flag)
 
-## Revalidation evidence (2026-02-22 UTC)
+## 2026-02-23 revalidation highlights
 
-1. Venv compile/import sanity passed:
-   - `python -m compileall -q ai-agent`
-   - `python -c "import main; import service.api"`
-2. API smoke checks passed from current code:
-   - `GET /health`
-   - `GET /repos`
-   - `GET /policies`
-   - `GET /repo/KRT-leadtool/summary`
-3. Policy loader resolved cleanly:
-   - policy dir: `ai-agent/config/policies`
-   - repo overrides: `KRT-leadtool`, `KRT-Com_Discord`
-   - parse errors: none
-4. LLM runtime behavior verified:
-   - default runtime selected provider: `openai`
-   - local endpoint `http://127.0.0.1:11434` currently unavailable
-   - fallback from `local` to `openai` works when fallback is enabled
+1. API health/setup:
+   - `GET /health` returns `setup_required` and embedded setup status.
+   - `GET /setup/status` and `GET /setup/values` both return expected data.
+2. Setup UX:
+   - Setup form is prefilled from saved `.env` values via `/setup/values`.
+   - PEM upload supports overwrite policy (`SETUP_PEM_OVERWRITE`) and writes setup audit events.
+3. Projects:
+   - Per-repo enable/disable semantics fixed for first explicit toggle from implicit-all mode.
+4. GitHub integration config:
+   - Hardcoded owner usage removed from GitHub modules; owner resolves dynamically from setup/env.
+5. Web strategy:
+   - New `web_live_playwright` strategy supports deterministic CodingAI dashboard checks and passed:
+     - Run Once
+     - Start Worker / Stop Worker
+     - Refresh
+     - Project enable/disable/enable
+     - Automation enable/disable
+6. Orchestrator V2:
+   - Added strict contracts + policy validators under `ai-agent/orchestrator/`.
+   - Added role modules (`ingest`, `planner`, `researcher`, `coder`, `reviewer`, `test_interpreter`, `judge`).
+   - Added run persistence (`orchestrator_runs`, `orchestrator_attempts`, `orchestrator_artifacts`) in `state.db`.
+   - Added orchestration APIs:
+     - `GET /orchestration/runs`
+     - `GET /orchestration/runs/{run_id}`
+     - `GET /orchestration/runs/{run_id}/artifacts`
+   - Added sandbox execution boundary adapter (`core/sandbox_runner_client.py`) with `RUNNER_MODE=sandbox_api`.
 
-## Operational snapshot
+## Evidence snapshot
 
-1. `state.json` currently tracks both target repos and runtime metadata (`llm_runtime`, `policy_runtime`).
-2. Branch `localstate` is ahead of `origin/localstate` by local commits in this VM.
-3. No local Ollama container/process is currently running.
+1. Compile/import sanity:
+   - `python -m py_compile` passed for updated API/test-runner/GitHub modules.
+2. Metrics/events:
+   - `GET /metrics` and `GET /events` return structured observability data.
+3. Governance/policy:
+   - `GET /policies` and per-repo summaries load with no policy parse errors.
+4. Research:
+   - `GET /research` endpoint works; in this VM local Searx upstream at `127.0.0.1:8080` is currently unavailable, so search reports upstream connection error instead of results.
 
-## Known gaps after Phase 12
+## Known open gaps
 
-1. No authentication/authorization on the FastAPI control plane.
-2. UI is polling-based only (no websocket/SSE streaming).
-3. Runtime persistence is still local JSON (`state.json`) with no DB backend.
-4. `config/repos.yaml` is not authoritative at runtime (runtime repo list comes from `AVAILABLE_REPOS`/`TARGET_REPOS`).
-5. Advanced optional items from earlier roadmap remain open (for example, richer multi-repo orchestration and deeper self-improving test-strategy loops).
+1. API authentication/authorization remains optional and currently not enabled.
+2. UI is polling-based (no SSE/websocket stream for updates yet).
+3. Persistence is still JSON (`state.json`) instead of SQLite.
+4. Phase 15 (chat/repo UX) is pending.
+5. Phase 20 prompt-safety filter is not yet implemented.
+6. Phase 21 missing-feature self-task issue creation is not yet implemented.
+7. Full V2 replacement mode is not yet active by default; currently `ORCHESTRATOR_V2_ENABLED` runs as preflight before the current patch/test flow.
+
+Implementation plan for all open roadmap items: `docs/implementation-plan.md`.

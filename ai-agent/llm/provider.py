@@ -5,7 +5,9 @@ import time
 import requests
 from dotenv import load_dotenv
 
-load_dotenv("/home/codingai/ai-agent/.env")
+from paths import ENV_FILE, LOGS_DIR
+
+load_dotenv(str(ENV_FILE))
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _VALID_PROVIDERS = {"openai", "local"}
@@ -17,7 +19,10 @@ LLM_HEALTHCHECK_ENABLED = os.getenv("LLM_HEALTHCHECK_ENABLED", "true").strip().l
 LLM_REQUIRE_HEALTHY = os.getenv("LLM_REQUIRE_HEALTHY", "true").strip().lower() in _TRUTHY
 LLM_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("LLM_HEALTHCHECK_TIMEOUT_SECONDS", "2.5"))
 LLM_HEALTHCHECK_CACHE_SECONDS = int(os.getenv("LLM_HEALTHCHECK_CACHE_SECONDS", "45"))
-LLM_TELEMETRY_FILE = os.getenv("LLM_TELEMETRY_FILE", "/home/codingai/ai-agent/logs/llm_telemetry.jsonl").strip()
+LLM_TELEMETRY_FILE = os.getenv(
+    "LLM_TELEMETRY_FILE",
+    str((LOGS_DIR / "llm_telemetry.jsonl").resolve()),
+).strip()
 LLM_TELEMETRY_ENABLED = os.getenv("LLM_TELEMETRY_ENABLED", "true").strip().lower() in _TRUTHY
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
@@ -45,6 +50,54 @@ _TELEMETRY_COUNTERS = {
 
 def _now_ts() -> int:
     return int(time.time())
+
+
+def refresh_runtime_config_from_env():
+    global LLM_PROVIDER
+    global LLM_PROVIDER_ORDER
+    global LLM_FALLBACK_ENABLED
+    global LLM_HEALTHCHECK_ENABLED
+    global LLM_REQUIRE_HEALTHY
+    global LLM_HEALTHCHECK_TIMEOUT_SECONDS
+    global LLM_HEALTHCHECK_CACHE_SECONDS
+    global LLM_TELEMETRY_FILE
+    global LLM_TELEMETRY_ENABLED
+    global OPENAI_API_KEY
+    global OPENAI_BASE_URL
+    global LOCAL_LLM_BASE_URL
+    global LOCAL_LLM_API_KEY
+    global LOCAL_LLM_API_MODE
+    global LOCAL_LLM_MODEL
+    global LOCAL_LLM_TEMPERATURE
+    global _ACTIVE_PROVIDER
+    global _LAST_READY_RESULT
+    global _LAST_READY_CHECK_AT
+
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    LLM_PROVIDER_ORDER = os.getenv("LLM_PROVIDER_ORDER", "local,openai").strip()
+    LLM_FALLBACK_ENABLED = os.getenv("LLM_FALLBACK_ENABLED", "true").strip().lower() in _TRUTHY
+    LLM_HEALTHCHECK_ENABLED = os.getenv("LLM_HEALTHCHECK_ENABLED", "true").strip().lower() in _TRUTHY
+    LLM_REQUIRE_HEALTHY = os.getenv("LLM_REQUIRE_HEALTHY", "true").strip().lower() in _TRUTHY
+    LLM_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("LLM_HEALTHCHECK_TIMEOUT_SECONDS", "2.5"))
+    LLM_HEALTHCHECK_CACHE_SECONDS = int(os.getenv("LLM_HEALTHCHECK_CACHE_SECONDS", "45"))
+    LLM_TELEMETRY_FILE = os.getenv(
+        "LLM_TELEMETRY_FILE",
+        str((LOGS_DIR / "llm_telemetry.jsonl").resolve()),
+    ).strip()
+    LLM_TELEMETRY_ENABLED = os.getenv("LLM_TELEMETRY_ENABLED", "true").strip().lower() in _TRUTHY
+
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com").strip()
+
+    LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434").strip()
+    LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "").strip()
+    LOCAL_LLM_API_MODE = os.getenv("LOCAL_LLM_API_MODE", "chat").strip().lower()
+    LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "").strip()
+    LOCAL_LLM_TEMPERATURE = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0.1"))
+
+    _ACTIVE_PROVIDER = None
+    _LAST_READY_RESULT = None
+    _LAST_READY_CHECK_AT = 0.0
 
 
 def _normalize_provider(name: str) -> str | None:
@@ -125,6 +178,145 @@ def _telemetry_event(event: str, **fields):
         pass
 
 
+def _extract_model_names(payload) -> list[str]:
+    items = []
+    if isinstance(payload, dict):
+        for key in ("data", "models"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                items = candidate
+                break
+    elif isinstance(payload, list):
+        items = payload
+
+    out = []
+    seen = set()
+    for item in items:
+        name = ""
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            for key in ("id", "name", "model"):
+                raw = item.get(key)
+                if raw:
+                    name = str(raw).strip()
+                    if name:
+                        break
+        if name and name not in seen:
+            out.append(name)
+            seen.add(name)
+    return out
+
+
+def _fetch_local_models(timeout: float) -> dict:
+    base_url = LOCAL_LLM_BASE_URL.strip()
+    if not base_url:
+        return {"configured": False, "source": "", "models": [], "error": "local_base_url_missing"}
+
+    errors = []
+
+    v1_models = f"{_with_v1(base_url)}/models"
+    try:
+        r = requests.get(v1_models, timeout=timeout)
+        if r.status_code == 200:
+            try:
+                payload = r.json()
+            except ValueError:
+                payload = {}
+            models = _extract_model_names(payload)
+            if models:
+                return {"configured": True, "source": "v1/models", "models": models, "error": ""}
+            errors.append("v1/models returned no models")
+        else:
+            errors.append(f"v1/models http_{r.status_code}")
+    except requests.RequestException as e:
+        errors.append(f"v1/models request_error: {_safe_text(e, max_len=240)}")
+
+    tags_url = f"{base_url.rstrip('/')}/api/tags"
+    try:
+        r2 = requests.get(tags_url, timeout=timeout)
+        if r2.status_code == 200:
+            try:
+                payload2 = r2.json()
+            except ValueError:
+                payload2 = {}
+            models2 = _extract_model_names(payload2)
+            if models2:
+                return {"configured": True, "source": "api/tags", "models": models2, "error": ""}
+            errors.append("api/tags returned no models")
+        else:
+            errors.append(f"api/tags http_{r2.status_code}")
+    except requests.RequestException as e:
+        errors.append(f"api/tags request_error: {_safe_text(e, max_len=240)}")
+
+    detail = "; ".join([part for part in errors if part]).strip()
+    return {
+        "configured": True,
+        "source": "",
+        "models": [],
+        "error": detail or "no_models_available",
+    }
+
+
+def get_local_model_status(timeout: float | None = None) -> dict:
+    timeout_seconds = max(
+        0.2,
+        float(LLM_HEALTHCHECK_TIMEOUT_SECONDS if timeout is None else timeout),
+    )
+    fetched = _fetch_local_models(timeout_seconds)
+    models = fetched.get("models", []) if isinstance(fetched.get("models"), list) else []
+    models = [str(model).strip() for model in models if str(model).strip()]
+    model_set = set(models)
+    configured = bool(fetched.get("configured"))
+    error = str(fetched.get("error") or "").strip()
+
+    if not configured:
+        return {
+            "configured": False,
+            "ready": False,
+            "reason": "not_configured",
+            "source": "",
+            "models": [],
+            "models_count": 0,
+            "error": error or "local_base_url_missing",
+        }
+
+    if not models:
+        return {
+            "configured": True,
+            "ready": False,
+            "reason": "no_models_available",
+            "source": str(fetched.get("source") or ""),
+            "models": [],
+            "models_count": 0,
+            "error": error or "no local models discovered via v1/models or api/tags",
+        }
+
+    configured_model = LOCAL_LLM_MODEL.strip()
+    if configured_model and configured_model not in model_set:
+        return {
+            "configured": True,
+            "ready": False,
+            "reason": "configured_model_missing",
+            "source": str(fetched.get("source") or ""),
+            "models": models,
+            "models_count": len(models),
+            "error": f"configured model '{configured_model}' not found in local model inventory",
+            "configured_model": configured_model,
+        }
+
+    return {
+        "configured": True,
+        "ready": True,
+        "reason": "ok",
+        "source": str(fetched.get("source") or ""),
+        "models": models,
+        "models_count": len(models),
+        "error": "",
+        "configured_model": configured_model,
+    }
+
+
 def check_provider_health(provider: str) -> dict:
     provider = _normalize_provider(provider) or provider
     if provider not in _VALID_PROVIDERS:
@@ -154,24 +346,31 @@ def check_provider_health(provider: str) -> dict:
                 "details": _safe_text(r.text),
             }
 
-        # local provider: support both OpenAI-compatible and Ollama native probe.
-        v1_models = f"{_with_v1(LOCAL_LLM_BASE_URL)}/models"
-        r = requests.get(v1_models, timeout=timeout)
-        if r.status_code == 200:
-            return {"provider": provider, "configured": True, "healthy": True, "reason": "ok_v1_models"}
-
-        tags_url = f"{LOCAL_LLM_BASE_URL.rstrip('/')}/api/tags"
-        r2 = requests.get(tags_url, timeout=timeout)
-        if r2.status_code == 200:
-            return {"provider": provider, "configured": True, "healthy": True, "reason": "ok_ollama_tags"}
+        local_status = get_local_model_status(timeout=timeout)
+        if local_status.get("ready"):
+            out = {
+                "provider": provider,
+                "configured": True,
+                "healthy": True,
+                "reason": "ok_models",
+                "local_model_source": local_status.get("source"),
+                "local_models_count": int(local_status.get("models_count", 0)),
+                "local_models": list(local_status.get("models", []))[:20],
+            }
+            configured_model = str(local_status.get("configured_model") or "").strip()
+            if configured_model:
+                out["configured_model"] = configured_model
+            return out
 
         return {
             "provider": provider,
-            "configured": True,
+            "configured": bool(local_status.get("configured")),
             "healthy": False,
-            "reason": "http_error",
-            "status_code": r2.status_code,
-            "details": _safe_text(r2.text),
+            "reason": str(local_status.get("reason") or "no_models_available"),
+            "local_model_source": local_status.get("source"),
+            "local_models_count": int(local_status.get("models_count", 0)),
+            "local_models": list(local_status.get("models", []))[:20],
+            "details": _safe_text(local_status.get("error", "")),
         }
     except requests.RequestException as e:
         return {

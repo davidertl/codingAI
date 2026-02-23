@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+from paths import AI_AGENT_DIR
+
 _TRUTHY = {"1", "true", "yes", "on"}
 _POLICY_CACHE = None
 _POLICY_CACHE_AT = 0.0
@@ -88,14 +90,7 @@ def _resolve_policy_dir():
     if env_dir:
         return env_dir
 
-    repo_local = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "policies"))
-    if os.path.isdir(repo_local):
-        return repo_local
-
-    canonical = "/home/codingai/ai-agent/config/policies"
-    if os.path.isdir(canonical):
-        return canonical
-
+    repo_local = os.path.abspath(os.path.join(str(AI_AGENT_DIR), "config", "policies"))
     return repo_local
 
 
@@ -121,7 +116,15 @@ def _env_default_policy():
                 minimum=0,
                 maximum=31 * 24 * 60 * 60,
             ),
-            "publish_failure_issue": _as_bool(os.getenv("PUBLISH_FAILURE_ISSUE", "true"), default=True),
+            "publish_failure_comment": _as_bool(os.getenv("PUBLISH_FAILURE_COMMENT", "true"), default=True),
+            "publish_failure_subissue": _as_bool(os.getenv("PUBLISH_FAILURE_SUBISSUE", "false"), default=False),
+            "failure_subissue_threshold": _as_int(
+                os.getenv("FAILURE_SUBISSUE_THRESHOLD", "3"),
+                default=3,
+                minimum=1,
+                maximum=50,
+            ),
+            "publish_failure_issue": _as_bool(os.getenv("PUBLISH_FAILURE_ISSUE", "false"), default=False),
         },
         "approval": {
             "required": _as_bool(os.getenv("MANUAL_APPROVAL_REQUIRED", "false"), default=False),
@@ -228,7 +231,26 @@ def _normalize_policy(raw_policy):
         minimum=0,
         maximum=31 * 24 * 60 * 60,
     )
-    safety["publish_failure_issue"] = _as_bool(safety.get("publish_failure_issue"), default=True)
+<<<<<<< ui-notes-local-llm
+    safety["publish_failure_subissue"] = _as_bool(safety.get("publish_failure_subissue"), default=False)
+=======
+    previous_publish_issue_flag = _as_bool(safety.get("publish_failure_issue"), default=False)
+    publish_failure_subissue = safety.get("publish_failure_subissue")
+    if publish_failure_subissue is None:
+        publish_failure_subissue = previous_publish_issue_flag
+    safety["publish_failure_subissue"] = _as_bool(publish_failure_subissue, default=False)
+>>>>>>> localstate
+    safety["publish_failure_comment"] = _as_bool(safety.get("publish_failure_comment"), default=True)
+    safety["failure_subissue_threshold"] = _as_int(
+        safety.get("failure_subissue_threshold", 3),
+        default=3,
+        minimum=1,
+        maximum=50,
+    )
+<<<<<<< ui-notes-local-llm
+=======
+    safety["publish_failure_issue"] = previous_publish_issue_flag
+>>>>>>> localstate
 
     approval = merged.setdefault("approval", {})
     approval["required"] = _as_bool(approval.get("required"), default=False)

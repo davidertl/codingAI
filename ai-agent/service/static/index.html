@@ -23,6 +23,9 @@
       --accent-2: #8de0b6;
       --shadow: 0 14px 44px rgba(3, 10, 14, 0.4);
       --radius: 16px;
+      --sidebar-width: 360px;
+      --sidebar-min: 260px;
+      --sidebar-max: 520px;
     }
 
     * { box-sizing: border-box; }
@@ -39,13 +42,39 @@
       letter-spacing: 0.01em;
     }
 
-    .grid {
+    .layout {
       min-height: 100%;
-      display: grid;
-      grid-template-columns: 330px 1fr;
+      display: flex;
       gap: 18px;
       padding: 18px;
+      align-items: flex-start;
     }
+
+    .sidebar {
+      width: var(--sidebar-width);
+      min-width: var(--sidebar-min);
+      max-width: var(--sidebar-max);
+      position: relative;
+      transition: width .2s ease;
+    }
+
+    body.sidebar-hidden .sidebar { display: none; }
+    body.sidebar-hidden .layout { gap: 0; }
+
+    .sidebar-reopen {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 120;
+      display: none;
+      padding: 6px 9px;
+      border-radius: 999px;
+      background: rgba(12, 26, 33, 0.96);
+    }
+
+    body.sidebar-hidden .sidebar-reopen { display: inline-flex; }
+
+    .main-panel { flex: 1; min-width: 0; }
 
     .panel {
       background: var(--surface);
@@ -57,10 +86,54 @@
       animation: enter .38s ease both;
     }
 
-    .panel .hd {
-      padding: 16px 18px 12px;
+    .sidebar-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px 10px;
       border-bottom: 1px solid var(--line);
-      background: linear-gradient(160deg, rgba(62, 113, 126, 0.2), rgba(18, 33, 38, 0));
+      background: linear-gradient(150deg, rgba(82, 199, 209, 0.14), rgba(18, 33, 38, 0));
+    }
+
+    .sidebar-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .ghost {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02);
+      color: var(--text);
+      padding: 6px 8px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: border-color .15s ease, color .15s ease, background .15s ease;
+    }
+
+    .ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    #sidebarHandle {
+      position: absolute;
+      top: 12px;
+      right: -7px;
+      width: 12px;
+      height: calc(100% - 24px);
+      cursor: col-resize;
+      border-radius: 10px;
+      background: rgba(82, 199, 209, 0.12);
+      border: 1px solid var(--line);
+      transition: background .2s ease;
+    }
+
+    #sidebarHandle:hover { background: rgba(82, 199, 209, 0.22); }
+    body.sidebar-hidden #sidebarHandle { display: none; }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin: 10px 12px 8px;
     }
 
     .title {
@@ -70,20 +143,7 @@
       letter-spacing: 0.02em;
     }
 
-    .subtitle {
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 0.85rem;
-    }
-
     .stack { padding: 14px; display: grid; gap: 12px; }
-
-    .kpis {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 10px;
-    }
 
     .kpi {
       background: var(--surface-strong);
@@ -94,6 +154,45 @@
 
     .kpi .k { color: var(--muted); font-size: 0.75rem; }
     .kpi .v { margin-top: 6px; font-size: 0.95rem; font-weight: 700; }
+    .kpi.time {
+      background:
+        linear-gradient(150deg, rgba(82, 199, 209, 0.14), rgba(18, 33, 38, 0.94));
+      border-color: rgba(126, 181, 178, 0.35);
+    }
+    .kpi .kline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .tz-gear {
+      width: 24px;
+      height: 24px;
+      min-width: 24px;
+      border-radius: 999px;
+      padding: 0;
+      font-size: 0.8rem;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(13, 28, 34, 0.95);
+      border-color: rgba(126, 181, 178, 0.4);
+    }
+    .server-time-main {
+      margin-top: 6px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 1.16rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #dff6f3;
+    }
+    .server-time-sub {
+      margin-top: 5px;
+      font-size: 0.69rem;
+      line-height: 1.35;
+      color: #9cc7c2;
+    }
 
     .repo {
       border: 1px solid var(--line);
@@ -160,9 +259,27 @@
       border-color: rgba(100, 204, 180, 0.7);
     }
 
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(10, 25, 32, 0.9);
+      color: var(--text);
+      font-size: 0.82rem;
+    }
+
+    label { color: var(--muted); font-size: 0.8rem; }
+
+    .form-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+
     .content {
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto 1fr;
       gap: 16px;
       padding: 16px;
     }
@@ -182,35 +299,71 @@
       margin-bottom: 10px;
     }
 
+    .box-body { display: grid; gap: 10px; }
+    .box.collapsed .box-body { display: none; }
+
+    .collapse-toggle {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02);
+      color: var(--text);
+      padding: 4px 6px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform .2s ease, border-color .2s ease, color .2s ease;
+    }
+
+    .collapse-toggle:hover { border-color: var(--accent); color: var(--accent); }
+    .box.collapsed .collapse-toggle { transform: rotate(-90deg); }
+
     .mono {
       font-family: "IBM Plex Mono", monospace;
       font-size: 0.75rem;
       color: var(--muted);
     }
 
-    table {
+    .settings-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      margin-bottom: 4px;
+    }
+
+    .settings-tab {
+      padding: 6px 10px;
+      font-size: 0.74rem;
+      border-radius: 999px;
+      background: rgba(13, 28, 34, 0.95);
+    }
+
+    .settings-tab.active {
+      border-color: rgba(100, 204, 180, 0.7);
+      background: rgba(51, 123, 131, 0.45);
+      color: var(--accent-2);
+    }
+
+    .settings-pane { display: none; }
+    .settings-pane.active { display: grid; gap: 10px; }
+    .hidden { display: none !important; }
+
+    .input-with-action {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    textarea {
       width: 100%;
-      border-collapse: collapse;
-      font-size: 0.81rem;
+      min-height: 90px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(10, 25, 32, 0.9);
+      color: var(--text);
+      font-size: 0.82rem;
+      resize: vertical;
     }
-
-    th, td {
-      text-align: left;
-      border-bottom: 1px solid rgba(126, 181, 178, 0.2);
-      padding: 7px 6px;
-      vertical-align: top;
-    }
-
-    th {
-      color: var(--muted);
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-weight: 700;
-    }
-
-    a { color: var(--accent-2); text-decoration: none; }
-    a:hover { text-decoration: underline; }
 
     .issues {
       display: grid;
@@ -262,6 +415,52 @@
       color: var(--muted);
       font-size: 0.82rem;
     }
+    .msg.warn {
+      border-color: rgba(240, 189, 79, 0.6);
+      color: #f2d9a4;
+    }
+    .msg.ok {
+      border-color: rgba(38, 213, 139, 0.5);
+      color: #bdeed8;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.81rem;
+    }
+
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid rgba(126, 181, 178, 0.2);
+      padding: 7px 6px;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+
+    pre {
+      background: rgba(9, 21, 26, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      overflow-x: auto;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      color: var(--muted);
+      max-height: 280px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    a { color: var(--accent-2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
 
     .toast {
       position: fixed;
@@ -273,7 +472,7 @@
       padding: 10px 12px;
       font-size: 0.8rem;
       max-width: 420px;
-      z-index: 99;
+      z-index: 140;
       opacity: 0;
       transform: translateY(12px);
       transition: opacity .2s ease, transform .2s ease;
@@ -283,8 +482,8 @@
     .toast.show { opacity: 1; transform: translateY(0); }
 
     @media (max-width: 1080px) {
-      .grid { grid-template-columns: 1fr; }
       .content { padding: 12px; }
+      .layout { padding: 12px; }
     }
 
     @keyframes enter {
@@ -294,38 +493,213 @@
   </style>
 </head>
 <body>
-  <main class="grid">
-    <section class="panel">
-      <div class="hd">
-        <h1 class="title">CodingAI Dashboard</h1>
-        <div class="subtitle">Phase 12: autonomy tuning, staged fallback, governance, CI and observability</div>
-        <div class="kpis">
-          <div class="kpi">
-            <div class="k">LLM</div>
-            <div class="v" id="llmStatus">-</div>
-          </div>
-          <div class="kpi">
-            <div class="k">Workers</div>
-            <div class="v" id="workersCount">0</div>
-          </div>
-          <div class="kpi">
-            <div class="k">Provider</div>
-            <div class="v" id="providerName">-</div>
-          </div>
-          <div class="kpi">
-            <div class="k">Server Time</div>
-            <div class="v mono" id="serverTime">-</div>
-          </div>
+  <button id="sidebarReopenBtn" class="ghost sidebar-reopen" title="Show sidebar">&#x21E5;</button>
+
+  <main class="layout">
+    <aside class="panel sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div>
+          <h1 class="title">CodingAI Dashboard</h1>
+        </div>
+        <div class="sidebar-actions">
+          <button id="sidebarCollapseBtn" class="ghost" title="Hide sidebar">&#x21E4;</button>
         </div>
       </div>
-      <div class="stack" id="repoList"></div>
-    </section>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="k">LLM</div>
+          <div class="v" id="llmStatus">-</div>
+        </div>
+        <div class="kpi">
+          <div class="k">Workers</div>
+          <div class="v" id="workersCount">0</div>
+        </div>
+        <div class="kpi">
+          <div class="k">Provider</div>
+          <div class="v" id="providerName">-</div>
+        </div>
+        <div class="kpi time">
+          <div class="kline">
+            <div class="k">Server Time</div>
+            <button id="serverTimeTzBtn" class="tz-gear" type="button" title="Set timezone">&#9881;</button>
+          </div>
+          <div class="server-time-main" id="serverTimeMain">--:--:--</div>
+          <div class="server-time-sub mono" id="serverTimeSub">-</div>
+        </div>
+      </div>
+      <div id="sidebarHandle" title="Drag to resize"></div>
 
-    <section class="panel">
+      <section class="box collapsible open" data-section="projects">
+        <div class="hd2">
+          <strong>Projects</strong>
+          <div class="row">
+            <span class="mono" id="projectsMeta">-</span>
+            <button class="collapse-toggle" data-collapse="projects">v</button>
+          </div>
+        </div>
+        <div class="box-body">
+          <div id="projectsList"></div>
+        </div>
+      </section>
+
+      <section class="box collapsible open" data-section="notes">
+        <div class="hd2">
+          <strong>Notes for LLM</strong>
+          <div class="row">
+            <span class="mono" id="sidebarRulesStatus">global:- project:- worker:-</span>
+            <button class="collapse-toggle" data-collapse="notes">v</button>
+          </div>
+        </div>
+        <div class="box-body">
+          <p class="mono" style="margin:0;">Global, project, and worker rules are edited in the main panel.</p>
+          <div class="row">
+            <button id="btnOpenNotesEditor">Open Notes Editor</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="box collapsible collapsed" data-section="settings">
+        <div class="hd2">
+          <strong>Settings</strong>
+          <div class="row">
+            <span class="chip" id="setupStatus">-</span>
+            <button class="collapse-toggle" data-collapse="settings">v</button>
+          </div>
+        </div>
+        <div class="box-body">
+          <div class="mono" id="setupMeta">Owner/App/Install/Pem status</div>
+
+          <div class="settings-tabs">
+            <button class="settings-tab" data-settings-tab="github">GitHub</button>
+            <button class="settings-tab" data-settings-tab="workers">Workers</button>
+            <button class="settings-tab" data-settings-tab="llm">LLM</button>
+            <button class="settings-tab" data-settings-tab="pem">PEM</button>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="github">
+            <div class="msg" id="githubSetupHint">GitHub IDs fehlen → /projects bleibt leer (bis die App-Daten gesetzt sind).</div>
+            <form class="stack" id="setupGithubForm">
+              <div class="form-grid">
+                <div>
+                  <label for="ghOwner">GitHub Owner</label>
+                  <input id="ghOwner" name="owner" placeholder="owner" autocomplete="off" required>
+                </div>
+                <div>
+                  <label for="ghAppId">App ID</label>
+                  <div class="input-with-action">
+                    <input id="ghAppId" name="app_id" type="password" placeholder="app id" autocomplete="off" required>
+                    <button id="btnShowAppId" type="button">Show</button>
+                  </div>
+                </div>
+                <div>
+                  <label for="ghInstallationId">Installation ID</label>
+                  <div class="input-with-action">
+                    <input id="ghInstallationId" name="installation_id" type="password" placeholder="installation id" autocomplete="off" required>
+                    <button id="btnShowInstallationId" type="button">Show</button>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <button type="submit" class="primary">Update GitHub IDs</button>
+                <button type="button" id="btnClearGithubIds">Clear GitHub IDs</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="workers">
+            <div class="mono" id="workersSettingsMeta">workers: 0</div>
+            <div id="workersSettingsList"></div>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="llm">
+            <div class="msg" id="llmModelHint">Kein Local Model verfügbar → LLM-Calls schlagen fehl.</div>
+            <form class="stack" id="setupLlmForm">
+              <div class="form-grid">
+                <div>
+                  <label for="llmProvider">LLM Provider</label>
+                  <select id="llmProvider" name="llm_provider">
+                    <option value="openai">openai</option>
+                    <option value="local">local</option>
+                    <option value="auto">auto</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="llmProviderOrder">Provider Order</label>
+                  <input id="llmProviderOrder" name="llm_provider_order" placeholder="local,openai" autocomplete="off">
+                </div>
+                <div>
+                  <label for="openaiBaseUrl">OpenAI Base URL</label>
+                  <input id="openaiBaseUrl" name="openai_base_url" placeholder="https://api.openai.com" autocomplete="off">
+                </div>
+                <div>
+                  <label for="localLlmBaseUrl">Local LLM Base URL</label>
+                  <input id="localLlmBaseUrl" name="local_llm_base_url" placeholder="http://127.0.0.1:11434" autocomplete="off">
+                </div>
+                <div>
+                  <label for="localLlmApiMode">Local LLM API Mode</label>
+                  <select id="localLlmApiMode" name="local_llm_api_mode">
+                    <option value="chat">chat</option>
+                    <option value="responses">responses</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="localLlmProfile">Local LLM Profile</label>
+                  <select id="localLlmProfile" name="local_llm_profile">
+                    <option value="auto">auto</option>
+                    <option value="gpu16">gpu16</option>
+                    <option value="gpu24">gpu24</option>
+                    <option value="cpu">cpu</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="localLlmModel">Local LLM Model</label>
+                  <input id="localLlmModel" name="local_llm_model" placeholder="optional model" autocomplete="off">
+                </div>
+                <div>
+                  <label for="openaiApiKey">OpenAI API Key (optional)</label>
+                  <input id="openaiApiKey" name="openai_api_key" type="password" autocomplete="new-password">
+                </div>
+                <div class="row" style="align-items:flex-end;">
+                  <label><input type="checkbox" id="openaiApiKeyClear" name="openai_api_key_clear" value="1"> Clear saved OpenAI key</label>
+                </div>
+                <div>
+                  <label for="localLlmApiKey">Local LLM API Key (optional)</label>
+                  <input id="localLlmApiKey" name="local_llm_api_key" type="password" autocomplete="new-password">
+                </div>
+                <div class="row" style="align-items:flex-end;">
+                  <label><input type="checkbox" id="localLlmApiKeyClear" name="local_llm_api_key_clear" value="1"> Clear saved local key</label>
+                </div>
+              </div>
+              <div class="row">
+                <button type="submit">Save LLM Settings</button>
+              </div>
+              <div class="mono" id="llmSetupStatus">LLM setup status</div>
+            </form>
+          </div>
+
+          <div class="settings-pane" data-settings-pane="pem">
+            <form class="stack" id="setupPemForm" enctype="multipart/form-data">
+              <label for="pemFile">GitHub App PEM</label>
+              <div class="row">
+                <input id="pemFile" name="pem" type="file" accept=".pem" required>
+                <button type="submit">Upload PEM</button>
+              </div>
+              <div class="mono" id="pemStatus">pem not uploaded</div>
+            </form>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel main-panel">
       <div class="content">
         <section class="box">
           <div class="hd2">
-            <strong id="selectedRepoTitle">Repository</strong>
+            <div class="row">
+              <strong>Open AI-Fix Queue</strong>
+              <span class="mono" id="selectedRepoTitle">repo: -</span>
+              <span class="mono" id="queueError"></span>
+            </div>
             <div class="row">
               <button class="primary" id="btnRunOnce">Run Once</button>
               <button id="btnStartWorker">Start Worker</button>
@@ -339,13 +713,6 @@
             <span id="policyMeta">Policy: -</span>
             <span id="budgetMeta">Budget: -</span>
           </div>
-        </section>
-
-        <section class="box">
-          <div class="hd2">
-            <strong>Open AI-Fix Queue</strong>
-            <span class="mono" id="queueError"></span>
-          </div>
           <div id="queueWrap"></div>
         </section>
 
@@ -355,6 +722,39 @@
             <span class="mono" id="trackedMeta"></span>
           </div>
           <div id="trackedWrap"></div>
+        </section>
+
+        <section class="box hidden" id="notesEditor">
+          <div class="hd2">
+            <strong>Notes for LLM</strong>
+            <div class="row">
+              <span class="mono" id="rulesMeta">Select a project to edit project/worker rules.</span>
+              <button class="ghost" id="btnCloseNotesEditor" type="button" title="Close Notes Editor">X</button>
+            </div>
+          </div>
+
+          <label for="rulesGlobalInput">Global Rules</label>
+          <textarea id="rulesGlobalInput" placeholder="Global rules applied to all LLM tasks."></textarea>
+          <div class="row">
+            <button id="btnSaveGlobalRules">Save Global Rules</button>
+          </div>
+
+          <label for="rulesProjectInput" id="rulesProjectLabel">Project Rules</label>
+          <textarea id="rulesProjectInput" placeholder="Project-specific rules (inherits global if empty)." disabled></textarea>
+          <div class="row">
+            <button id="btnSaveProjectRules" disabled>Save Project Rules</button>
+            <button id="btnResetProjectRules" disabled>Reset to Global</button>
+          </div>
+
+          <label for="rulesWorkerInput" id="rulesWorkerLabel">Worker Rules</label>
+          <textarea id="rulesWorkerInput" placeholder="Worker-specific rules (inherits project if empty)." disabled></textarea>
+          <div class="row">
+            <button id="btnSaveWorkerRules" disabled>Save Worker Rules</button>
+            <button id="btnResetWorkerRules" disabled>Reset to Project</button>
+          </div>
+
+          <label for="rulesEffectivePreview">Effective Rules Preview</label>
+          <pre id="rulesEffectivePreview">No rules loaded.</pre>
         </section>
       </div>
     </section>
@@ -368,15 +768,37 @@
       selectedRepo: null,
       health: null,
       summary: null,
+      setup: null,
+      setupValues: null,
+      projects: [],
+      workers: [],
+      projectsSource: "unknown",
+      timezone: "local",
+      lastEditAt: 0,
+      lastProjectsError: "",
+      liveSocket: null,
+      liveReconnectTimer: null,
+      wsConnected: false,
+      rules: {
+        global: null,
+        project: null,
+        worker: null,
+        effective: null,
+      },
       refreshTimer: null,
     };
 
     const el = {
-      repoList: document.getElementById("repoList"),
+      sidebar: document.getElementById("sidebar"),
+      sidebarHandle: document.getElementById("sidebarHandle"),
+      sidebarCollapseBtn: document.getElementById("sidebarCollapseBtn"),
+      sidebarReopenBtn: document.getElementById("sidebarReopenBtn"),
       llmStatus: document.getElementById("llmStatus"),
       workersCount: document.getElementById("workersCount"),
       providerName: document.getElementById("providerName"),
-      serverTime: document.getElementById("serverTime"),
+      serverTimeMain: document.getElementById("serverTimeMain"),
+      serverTimeSub: document.getElementById("serverTimeSub"),
+      serverTimeTzBtn: document.getElementById("serverTimeTzBtn"),
       selectedRepoTitle: document.getElementById("selectedRepoTitle"),
       workerMeta: document.getElementById("workerMeta"),
       queueMeta: document.getElementById("queueMeta"),
@@ -391,7 +813,77 @@
       btnStopWorker: document.getElementById("btnStopWorker"),
       btnRefresh: document.getElementById("btnRefresh"),
       toast: document.getElementById("toast"),
+      setupStatus: document.getElementById("setupStatus"),
+      setupMeta: document.getElementById("setupMeta"),
+      githubSetupHint: document.getElementById("githubSetupHint"),
+      llmModelHint: document.getElementById("llmModelHint"),
+      pemStatus: document.getElementById("pemStatus"),
+      setupGithubForm: document.getElementById("setupGithubForm"),
+      setupLlmForm: document.getElementById("setupLlmForm"),
+      setupPemForm: document.getElementById("setupPemForm"),
+      ghOwner: document.getElementById("ghOwner"),
+      ghAppId: document.getElementById("ghAppId"),
+      ghInstallationId: document.getElementById("ghInstallationId"),
+      btnShowAppId: document.getElementById("btnShowAppId"),
+      btnShowInstallationId: document.getElementById("btnShowInstallationId"),
+      btnClearGithubIds: document.getElementById("btnClearGithubIds"),
+      llmSetupStatus: document.getElementById("llmSetupStatus"),
+      llmProvider: document.getElementById("llmProvider"),
+      llmProviderOrder: document.getElementById("llmProviderOrder"),
+      openaiBaseUrl: document.getElementById("openaiBaseUrl"),
+      openaiApiKey: document.getElementById("openaiApiKey"),
+      openaiApiKeyClear: document.getElementById("openaiApiKeyClear"),
+      localLlmBaseUrl: document.getElementById("localLlmBaseUrl"),
+      localLlmApiMode: document.getElementById("localLlmApiMode"),
+      localLlmProfile: document.getElementById("localLlmProfile"),
+      localLlmModel: document.getElementById("localLlmModel"),
+      localLlmApiKey: document.getElementById("localLlmApiKey"),
+      localLlmApiKeyClear: document.getElementById("localLlmApiKeyClear"),
+      projectsMeta: document.getElementById("projectsMeta"),
+      projectsList: document.getElementById("projectsList"),
+      workersSettingsMeta: document.getElementById("workersSettingsMeta"),
+      workersSettingsList: document.getElementById("workersSettingsList"),
+      btnOpenNotesEditor: document.getElementById("btnOpenNotesEditor"),
+      btnCloseNotesEditor: document.getElementById("btnCloseNotesEditor"),
+      sidebarRulesStatus: document.getElementById("sidebarRulesStatus"),
+      rulesMeta: document.getElementById("rulesMeta"),
+      rulesGlobalInput: document.getElementById("rulesGlobalInput"),
+      rulesProjectInput: document.getElementById("rulesProjectInput"),
+      rulesWorkerInput: document.getElementById("rulesWorkerInput"),
+      rulesEffectivePreview: document.getElementById("rulesEffectivePreview"),
+      rulesProjectLabel: document.getElementById("rulesProjectLabel"),
+      rulesWorkerLabel: document.getElementById("rulesWorkerLabel"),
+      btnSaveGlobalRules: document.getElementById("btnSaveGlobalRules"),
+      btnSaveProjectRules: document.getElementById("btnSaveProjectRules"),
+      btnResetProjectRules: document.getElementById("btnResetProjectRules"),
+      btnSaveWorkerRules: document.getElementById("btnSaveWorkerRules"),
+      btnResetWorkerRules: document.getElementById("btnResetWorkerRules"),
     };
+
+    const storage = {
+      get(key, fallback = null) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw === null || raw === undefined) return fallback;
+          return JSON.parse(raw);
+        } catch (e) {
+          return fallback;
+        }
+      },
+      set(key, value) {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+        } catch (e) {
+        }
+      },
+    };
+
+    const SIDEBAR_WIDTH_KEY = "codingai.ui.sidebar.width";
+    const SIDEBAR_HIDDEN_KEY = "codingai.ui.sidebar.hidden";
+    const SECTION_COLLAPSE_KEY = "codingai.ui.sidebar.sections";
+    const SETTINGS_TAB_KEY = "codingai.ui.settings.tab";
+    const TIMEZONE_KEY = "codingai.ui.timezone";
+    const LIVE_WS_RECONNECT_MS = 2200;
 
     async function fetchJson(path, opts = {}) {
       const res = await fetch(path, opts);
@@ -402,12 +894,32 @@
       return res.json();
     }
 
-    function showToast(message, isError = false) {
-      el.toast.textContent = message;
-      el.toast.style.borderColor = isError ? "rgba(239,109,109,0.65)" : "rgba(126,181,178,0.42)";
-      el.toast.classList.add("show");
-      clearTimeout(showToast._t);
-      showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
+    function liveSocketUrl() {
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      return `${proto}://${window.location.host}/ws/live`;
+    }
+
+    function sendLiveMessage(payload) {
+      if (!state.liveSocket || state.liveSocket.readyState !== WebSocket.OPEN) return false;
+      try {
+        state.liveSocket.send(JSON.stringify(payload));
+        return true;
+      } catch (_e) {
+        return false;
+      }
+    }
+
+    function sendLiveRepoSelection() {
+      if (!state.selectedRepo) return;
+      sendLiveMessage({ type: "set_repo", repo: state.selectedRepo });
+    }
+
+    function escapeHtml(text) {
+      return String(text || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
     }
 
     function statusClass(status) {
@@ -417,25 +929,211 @@
       return "status pending";
     }
 
-    function renderRepos() {
-      const rows = state.repos.map((item) => {
-        const active = item.repo === state.selectedRepo ? "repo active" : "repo";
-        const running = item.running ? "chip ok" : "chip";
-        return `
-          <article class="${active}" data-repo="${item.repo}">
-            <div class="name">
-              <span>${item.repo}</span>
-              <span class="${running}">${item.running ? "worker:on" : "worker:off"}</span>
-            </div>
-            <div class="row">
-              <button data-action="select" data-repo="${item.repo}">Select</button>
-              <button data-action="start" data-repo="${item.repo}">Start</button>
-              <button data-action="stop" data-repo="${item.repo}">Stop</button>
-            </div>
-          </article>
-        `;
-      }).join("");
-      el.repoList.innerHTML = rows || `<div class="msg">No repositories configured.</div>`;
+    function cssEscape(value) {
+      if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(value);
+      }
+      return String(value || "").replace(/'/g, "\\\\'");
+    }
+
+    function showToast(message, isError = false) {
+      el.toast.textContent = message;
+      el.toast.style.borderColor = isError ? "rgba(239,109,109,0.65)" : "rgba(126,181,178,0.42)";
+      el.toast.classList.add("show");
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
+    }
+
+<<<<<<< ui-notes-local-llm
+    function rememberProjectsError(message) {
+      const text = String(message || "").trim();
+      if (!text) {
+        state.lastProjectsError = "";
+        return;
+      }
+      if (state.lastProjectsError !== text) {
+        state.lastProjectsError = text;
+        showToast(`projects fallback: ${text}`, true);
+      }
+    }
+
+    function isEditableTarget(target) {
+      if (!target || !(target instanceof Element)) return false;
+      const tag = String(target.tagName || "").toUpperCase();
+      if (target.isContentEditable) return true;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (typeof target.closest === "function" && target.closest("[contenteditable='true']")) return true;
+      return false;
+    }
+
+    function normalizeTimezoneInput(input) {
+      const raw = String(input || "").trim();
+      if (!raw || raw.toLowerCase() === "local" || raw.toLowerCase() === "system") {
+        return { ok: true, value: "local", label: "Browser Local Time" };
+      }
+      const value = raw.toUpperCase() === "UTC" ? "UTC" : raw;
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
+      } catch (_e) {
+        return { ok: false, value: "local", label: "" };
+      }
+      return { ok: true, value, label: value };
+    }
+
+    function effectiveTimezone() {
+      if (state.timezone && state.timezone !== "local") return state.timezone;
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    }
+
+    function formatServerTime(utcIso) {
+      const src = String(utcIso || "").trim();
+      if (!src) {
+        return { main: "--:--:--", sub: "No timestamp", zone: "-" };
+      }
+      const dt = new Date(src);
+      if (Number.isNaN(dt.getTime())) {
+        return { main: src, sub: "Invalid timestamp", zone: "-" };
+      }
+      const zone = effectiveTimezone();
+      const main = new Intl.DateTimeFormat("en-GB", {
+        timeZone: zone,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(dt);
+      const datePart = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        weekday: "short",
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      }).format(dt);
+      const zonePart = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        timeZoneName: "short",
+      })
+        .formatToParts(dt)
+        .find((p) => p.type === "timeZoneName")?.value || zone;
+      const sourcePart = src.endsWith("Z") ? "source: UTC" : "source: server";
+      return { main, sub: `${datePart} • ${zonePart} • ${sourcePart}`, zone };
+    }
+
+=======
+>>>>>>> localstate
+    function openNotesEditor() {
+      const editor = document.getElementById("notesEditor");
+      if (!editor) return;
+      editor.classList.remove("hidden");
+      editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function closeNotesEditor() {
+      const editor = document.getElementById("notesEditor");
+      if (!editor) return;
+      editor.classList.add("hidden");
+    }
+
+    function clampSidebarWidth(px) {
+      const min = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-min")) || 260;
+      const max = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-max")) || 520;
+      return Math.min(max, Math.max(min, Math.round(px)));
+    }
+
+    function setSidebarWidth(px) {
+      const w = clampSidebarWidth(px);
+      document.documentElement.style.setProperty("--sidebar-width", `${w}px`);
+      storage.set(SIDEBAR_WIDTH_KEY, w);
+    }
+
+    function setSidebarHidden(hidden) {
+      document.body.classList.toggle("sidebar-hidden", !!hidden);
+      storage.set(SIDEBAR_HIDDEN_KEY, !!hidden);
+    }
+
+    function renderSummaryFromState() {
+      if (!state.selectedRepo) {
+        el.selectedRepoTitle.textContent = "repo: -";
+        el.queueWrap.innerHTML = `<div class="msg">No open ai-fix issues in queue.</div>`;
+        el.trackedWrap.innerHTML = `<div class="msg">No tracked issue state yet for this repository.</div>`;
+        return;
+      }
+      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
+      renderQueue(state.summary || {});
+      renderTracked(state.summary || {});
+    }
+
+    function setSettingsTab(tabId) {
+      const normalized = String(tabId || "github");
+      document.querySelectorAll(".settings-tab").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.settingsTab === normalized);
+      });
+      document.querySelectorAll(".settings-pane").forEach((pane) => {
+        pane.classList.toggle("active", pane.dataset.settingsPane === normalized);
+      });
+      storage.set(SETTINGS_TAB_KEY, normalized);
+    }
+
+    function initSidebarChrome() {
+      const savedWidth = storage.get(SIDEBAR_WIDTH_KEY, null);
+      if (savedWidth) setSidebarWidth(savedWidth);
+
+      const savedHidden = storage.get(SIDEBAR_HIDDEN_KEY, false);
+      setSidebarHidden(!!savedHidden);
+
+      const sectionState = storage.get(SECTION_COLLAPSE_KEY, { settings: true }) || {};
+      document.querySelectorAll(".collapsible").forEach((section) => {
+        const id = section.dataset.section || "";
+        const collapsed = sectionState[id];
+        section.classList.toggle("collapsed", !!collapsed);
+      });
+
+      document.querySelectorAll(".collapse-toggle").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.collapse;
+          const section = document.querySelector(`.collapsible[data-section='${id}']`);
+          if (!section) return;
+          const next = !section.classList.contains("collapsed");
+          section.classList.toggle("collapsed", next);
+          sectionState[id] = next;
+          storage.set(SECTION_COLLAPSE_KEY, sectionState);
+        });
+      });
+
+      if (el.sidebarCollapseBtn) {
+        el.sidebarCollapseBtn.addEventListener("click", () => setSidebarHidden(true));
+      }
+      if (el.sidebarReopenBtn) {
+        el.sidebarReopenBtn.addEventListener("click", () => setSidebarHidden(false));
+      }
+
+      if (el.sidebarHandle && el.sidebar) {
+        let dragging = false;
+        const onMove = (ev) => {
+          if (!dragging) return;
+          const rect = el.sidebar.getBoundingClientRect();
+          setSidebarWidth(ev.clientX - rect.left);
+        };
+        const onUp = () => {
+          dragging = false;
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+        };
+        el.sidebarHandle.addEventListener("mousedown", (ev) => {
+          if (document.body.classList.contains("sidebar-hidden")) return;
+          dragging = true;
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+          ev.preventDefault();
+        });
+      }
+
+      const savedTab = storage.get(SETTINGS_TAB_KEY, "github");
+      setSettingsTab(savedTab || "github");
+    }
+
+    function itemByRepo(repo) {
+      return state.repos.find((r) => r.repo === repo);
     }
 
     function renderHeader() {
@@ -443,8 +1141,255 @@
       el.llmStatus.textContent = h.llm_ready ? "READY" : "NOT READY";
       el.llmStatus.style.color = h.llm_ready ? "var(--ok)" : "var(--bad)";
       el.providerName.textContent = h.llm_active_provider || "-";
-      el.serverTime.textContent = h.time_utc || "-";
+      const formatted = formatServerTime(h.time_utc || "");
+      el.serverTimeMain.textContent = formatted.main;
+      el.serverTimeSub.textContent = formatted.sub;
+      if (el.serverTimeTzBtn) {
+        el.serverTimeTzBtn.title = `Set timezone (current: ${formatted.zone})`;
+      }
       el.workersCount.textContent = String(h.workers_running ?? 0);
+    }
+
+    function renderSetup() {
+      const s = state.setup || {};
+      const v = state.setupValues || {};
+      const ok = s.setup_complete;
+      const hasGithubIds = !!(s.has_owner && s.has_app_id && s.has_installation_id);
+      const localModelsCount = Number(v.local_models_count || 0);
+      const localModelReady = !!v.local_model_ready;
+      const localModelError = String(v.local_model_error || "").trim();
+      el.setupStatus.className = ok ? "chip ok" : "chip warn";
+      el.setupStatus.textContent = ok ? "READY" : "INCOMPLETE";
+      el.setupMeta.textContent = `owner=${s.has_owner ? "Y" : "N"} app=${s.has_app_id ? "Y" : "N"} install=${s.has_installation_id ? "Y" : "N"} pem=${s.pem_exists ? "Y" : "N"}`;
+      el.pemStatus.textContent = s.pem_exists ? "PEM present (0600)" : "PEM missing";
+      el.llmSetupStatus.textContent = `provider=${v.llm_provider || "-"} order=${v.llm_provider_order || "-"} profile=${v.local_llm_profile || "-"} local_models=${localModelsCount} openai_key=${v.openai_api_key_set ? "set" : "missing"} local_key=${v.local_llm_api_key_set ? "set" : "missing"}`;
+
+      if (el.githubSetupHint) {
+        if (hasGithubIds) {
+          el.githubSetupHint.textContent = "GitHub IDs gesetzt. /projects wird über die Installation geladen.";
+          el.githubSetupHint.classList.remove("warn");
+          el.githubSetupHint.classList.add("ok");
+        } else {
+          el.githubSetupHint.textContent = "GitHub IDs fehlen → /projects bleibt leer (bis die App-Daten gesetzt sind).";
+          el.githubSetupHint.classList.add("warn");
+          el.githubSetupHint.classList.remove("ok");
+        }
+      }
+
+      if (el.llmModelHint) {
+        if (localModelReady) {
+          el.llmModelHint.textContent = `Local model inventory ready (${localModelsCount} model${localModelsCount === 1 ? "" : "s"}).`;
+          el.llmModelHint.classList.remove("warn");
+          el.llmModelHint.classList.add("ok");
+        } else {
+          const suffix = localModelError ? ` (${localModelError})` : "";
+          el.llmModelHint.textContent = `Kein Local Model verfügbar → LLM-Calls schlagen fehl${suffix}.`;
+          el.llmModelHint.classList.add("warn");
+          el.llmModelHint.classList.remove("ok");
+        }
+      }
+    }
+
+    function applySetupValues(values) {
+      const v = values || {};
+      if (!el.ghOwner.value && v.owner) el.ghOwner.value = v.owner;
+      if (!el.ghAppId.value && v.app_id) el.ghAppId.value = v.app_id;
+      if (!el.ghInstallationId.value && v.installation_id) el.ghInstallationId.value = v.installation_id;
+      if (v.llm_provider && document.activeElement !== el.llmProvider) el.llmProvider.value = v.llm_provider;
+      if (!el.llmProviderOrder.value && v.llm_provider_order) el.llmProviderOrder.value = v.llm_provider_order;
+      if (!el.openaiBaseUrl.value && v.openai_base_url) el.openaiBaseUrl.value = v.openai_base_url;
+      if (!el.localLlmBaseUrl.value && v.local_llm_base_url) el.localLlmBaseUrl.value = v.local_llm_base_url;
+      if (v.local_llm_api_mode && document.activeElement !== el.localLlmApiMode) el.localLlmApiMode.value = v.local_llm_api_mode;
+      if (v.local_llm_profile && document.activeElement !== el.localLlmProfile) el.localLlmProfile.value = v.local_llm_profile;
+      if (!el.localLlmModel.value && v.local_llm_model) el.localLlmModel.value = v.local_llm_model;
+    }
+
+    function renderWorkersSettings() {
+      const workers = Array.isArray(state.workers) ? state.workers : [];
+      const running = workers.filter((w) => w.running).length;
+      el.workersSettingsMeta.textContent = `workers: ${workers.length} total / ${running} running`;
+      if (!workers.length) {
+        el.workersSettingsList.innerHTML = `<div class="msg">No workers running.</div>`;
+        return;
+      }
+      el.workersSettingsList.innerHTML = workers.map((worker) => {
+        return `
+          <article class="repo">
+            <div class="name">
+              <span>${escapeHtml(worker.repo || "-")}</span>
+              <span class="chip ${worker.running ? "ok" : "warn"}">${worker.running ? "running" : "stopped"}</span>
+            </div>
+            <div class="mono">cycles=${worker.cycles || 0} interval=${worker.poll_interval_seconds || "-"}s</div>
+            <div class="mono">last_error=${escapeHtml(worker.last_error || "-")}</div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function renderProjects() {
+      const items = state.projects || [];
+      const source = state.projectsSource || "unknown";
+      el.projectsMeta.textContent = `${items.length} repos (${source})`;
+      if (!items.length) {
+        el.projectsList.innerHTML = `<div class="msg">No installation repositories visible. Ensure GitHub App credentials are set and PEM uploaded.</div>`;
+        return;
+      }
+      el.projectsList.innerHTML = items
+        .map((p) => {
+          const runtime = itemByRepo(p.repo) || {};
+          const active = p.repo === state.selectedRepo ? "repo active" : "repo";
+          const running = runtime.running ? "chip ok" : "chip";
+          const auto = runtime.automation ? "chip ok" : "chip warn";
+          const cls = p.enabled ? "chip ok" : "chip";
+          const action = p.enabled ? "disable" : "enable";
+          const label = p.enabled ? "Disable" : "Enable";
+          const gate = p.push_gate_mode || "auto_10s";
+          const gateMatch = /^auto_(\d+)s$/i.exec(gate);
+          const gateIsAuto = !!gateMatch;
+          const gateSeconds = gateMatch ? Number(gateMatch[1]) : 10;
+          const gateChip = gateIsAuto ? `gate:auto_${gateSeconds}s` : "gate:manual";
+          return `
+            <article class="${active}">
+              <div class="name">
+                <span>${escapeHtml(p.repo)}</span>
+                <span class="${running}">${runtime.running ? "worker:on" : "worker:off"}</span>
+                <span class="${auto}">${runtime.automation ? "auto" : "manual"}</span>
+                <span class="${cls}">${p.enabled ? "enabled" : "disabled"}</span>
+                <span class="chip">${escapeHtml(gateChip)}</span>
+              </div>
+              <div class="row">
+                <button data-project="${escapeHtml(p.repo)}" data-action="select">Select</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="start">Start</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="stop">Stop</button>
+                <button data-project="${escapeHtml(p.repo)}" data-action="auto-toggle">${runtime.automation ? "Disable Auto" : "Enable Auto"}</button>
+              </div>
+              <div class="row">
+                <button data-project="${escapeHtml(p.repo)}" data-action="${action}">${label}</button>
+                <label class="mono" style="display:inline-flex;align-items:center;gap:6px;">
+                  <input type="checkbox" data-project-gate-auto="${escapeHtml(p.repo)}" ${gateIsAuto ? "checked" : ""}>
+                  Auto
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="86400"
+                  step="1"
+                  data-project-gate-seconds="${escapeHtml(p.repo)}"
+                  value="${gateSeconds}"
+                  ${gateIsAuto ? "" : "disabled"}
+                  style="width:92px;"
+                >
+                <span class="mono">sec</span>
+                <button data-project="${escapeHtml(p.repo)}" data-action="set-gate">Save Gate</button>
+              </div>
+            </article>
+          `;
+        })
+        .join("");
+
+      el.projectsList.querySelectorAll("input[data-project-gate-auto]").forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          const repo = checkbox.getAttribute("data-project-gate-auto");
+          if (!repo) return;
+          const secondsInput = el.projectsList.querySelector(`input[data-project-gate-seconds='${cssEscape(repo)}']`);
+          if (!secondsInput) return;
+          secondsInput.disabled = !checkbox.checked;
+        });
+      });
+    }
+
+    function applyLiveSnapshot(payload) {
+      if (!payload || typeof payload !== "object") return;
+      if (payload.health && typeof payload.health === "object") state.health = payload.health;
+      if (Array.isArray(payload.repos)) state.repos = payload.repos;
+
+      if (Object.prototype.hasOwnProperty.call(payload, "selected_repo")) {
+        state.selectedRepo = payload.selected_repo ? String(payload.selected_repo) : null;
+      } else if (!state.selectedRepo && state.repos.length) {
+        state.selectedRepo = state.repos[0].repo;
+      }
+
+      if (payload.summary && typeof payload.summary === "object") state.summary = payload.summary;
+      if (payload.setup_status && typeof payload.setup_status === "object") state.setup = payload.setup_status;
+      if (payload.setup_values && typeof payload.setup_values === "object") state.setupValues = payload.setup_values;
+
+      const projectsPayload = payload.projects && typeof payload.projects === "object" ? payload.projects : null;
+      if (projectsPayload) {
+        state.projects = Array.isArray(projectsPayload.projects) ? projectsPayload.projects : [];
+        state.projectsSource = String(projectsPayload.source || "unknown");
+        rememberProjectsError(projectsPayload.error || "");
+      }
+
+      const workersPayload = payload.workers && typeof payload.workers === "object" ? payload.workers : null;
+      if (workersPayload) {
+        state.workers = Array.isArray(workersPayload.workers) ? workersPayload.workers : [];
+      }
+
+      const rulesPayload = payload.rules && typeof payload.rules === "object" ? payload.rules : null;
+      if (rulesPayload) {
+        state.rules.global = normalizeRuleResponse(rulesPayload.global || {});
+        state.rules.project = rulesPayload.project ? normalizeRuleResponse(rulesPayload.project) : null;
+        state.rules.worker = rulesPayload.worker ? normalizeRuleResponse(rulesPayload.worker) : null;
+        state.rules.effective = {
+          text: String((rulesPayload.effective && rulesPayload.effective.text) || ""),
+          sources: Array.isArray(rulesPayload.effective?.sources) ? rulesPayload.effective.sources : [],
+        };
+      }
+
+      applySetupValues(state.setupValues || {});
+      renderHeader();
+      renderProjects();
+      renderWorkersSettings();
+      renderSummaryFromState();
+      renderRules();
+    }
+
+    function connectLiveSocket() {
+      if (state.liveSocket && (state.liveSocket.readyState === WebSocket.OPEN || state.liveSocket.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      const ws = new WebSocket(liveSocketUrl());
+      state.liveSocket = ws;
+
+      ws.onopen = () => {
+        state.wsConnected = true;
+        if (state.liveReconnectTimer) {
+          clearTimeout(state.liveReconnectTimer);
+          state.liveReconnectTimer = null;
+        }
+        sendLiveRepoSelection();
+      };
+
+      ws.onmessage = (ev) => {
+        let msg = null;
+        try {
+          msg = JSON.parse(String(ev.data || ""));
+        } catch (_e) {
+          return;
+        }
+        const type = String(msg?.type || "");
+        if (type === "hello" || type === "pong") return;
+        if (type === "error") {
+          showToast(`live update error: ${msg.error || "unknown"}`, true);
+          return;
+        }
+        if (type === "snapshot") {
+          applyLiveSnapshot(msg);
+        }
+      };
+
+      ws.onclose = () => {
+        state.wsConnected = false;
+        state.liveSocket = null;
+        if (!state.liveReconnectTimer) {
+          state.liveReconnectTimer = setTimeout(() => {
+            state.liveReconnectTimer = null;
+            connectLiveSocket();
+          }, LIVE_WS_RECONNECT_MS);
+        }
+      };
+
+      ws.onerror = () => {};
     }
 
     function renderQueue(summary) {
@@ -454,19 +1399,25 @@
       el.queueError.textContent = q.error ? `queue_error: ${q.error}` : "";
 
       if (!issues.length) {
-        el.queueWrap.innerHTML = `<div class="msg">No open \`ai-fix\` issues in queue.</div>`;
+        el.queueWrap.innerHTML = `<div class="msg">No open ai-fix issues in queue.</div>`;
         return;
       }
 
-      const rows = issues.map((issue) => `
-        <tr>
-          <td>#${issue.number}</td>
-          <td>${issue.title || "(no title)"}</td>
-          <td class="mono">${issue.updated_at || "-"}</td>
-          <td>${(issue.labels || []).join(", ")}</td>
-          <td>${issue.html_url ? `<a href="${issue.html_url}" target="_blank" rel="noreferrer">open</a>` : "-"}</td>
-        </tr>
-      `).join("");
+      const rows = issues.map((issue) => {
+        const safeTitle = escapeHtml(issue.title || "(no title)");
+        const safeUpdated = escapeHtml(issue.updated_at || "-");
+        const safeLabels = escapeHtml((issue.labels || []).join(", "));
+        const safeLink = issue.html_url ? `<a href="${escapeHtml(issue.html_url)}" target="_blank" rel="noreferrer">open</a>` : "-";
+        return `
+          <tr>
+            <td>#${issue.number}</td>
+            <td>${safeTitle}</td>
+            <td class="mono">${safeUpdated}</td>
+            <td>${safeLabels}</td>
+            <td>${safeLink}</td>
+          </tr>
+        `;
+      }).join("");
 
       el.queueWrap.innerHTML = `
         <table>
@@ -495,8 +1446,8 @@
       const mode = policy.dry_run ? "DRY-RUN" : "LIVE";
       const policyEnabled = policy.enabled === false ? "disabled" : "enabled";
       el.policyMeta.textContent = `Policy: ${policyEnabled} mode=${mode}`;
-      const dayBudget = budget.max_per_day > 0 ? `${budget.daily_count}/${budget.max_per_day}` : `${budget.daily_count}/∞`;
-      const weekBudget = budget.max_per_week > 0 ? `${budget.weekly_count}/${budget.max_per_week}` : `${budget.weekly_count}/∞`;
+      const dayBudget = budget.max_per_day > 0 ? `${budget.daily_count}/${budget.max_per_day}` : `${budget.daily_count}/inf`;
+      const weekBudget = budget.max_per_week > 0 ? `${budget.weekly_count}/${budget.max_per_week}` : `${budget.weekly_count}/inf`;
       el.budgetMeta.textContent = `Budget: day=${dayBudget} week=${weekBudget}`;
       el.trackedMeta.textContent = `Tracked issues: ${issues.length}`;
 
@@ -506,36 +1457,54 @@
       }
 
       const cards = issues.map((item) => {
-        const status = item.last_status || "unknown";
+        const status = escapeHtml(item.last_status || "unknown");
         const statusCls = statusClass(status);
         const ciGate = item.ci_gate || {};
         const ciDecision = ciGate.decision || {};
+        const pipeline = item.pipeline || {};
+        const stage = escapeHtml(pipeline.stage || "n/a");
+        const pauseDeadline = pipeline.pause_deadline ? new Date(pipeline.pause_deadline * 1000).toISOString() : "-";
+        const diffPreview = escapeHtml(pipeline.diff ? pipeline.diff.slice(0, 400) : "");
+        const testPreview = escapeHtml(pipeline.test_output_excerpt ? pipeline.test_output_excerpt.slice(0, 400) : "");
         const links = [
-          item.pr_url ? `<a href="${item.pr_url}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
-          item.check_run_url ? `<a href="${item.check_run_url}" target="_blank" rel="noreferrer">check run</a>` : "",
+          item.pr_url ? `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR #${item.pr_number || "?"}</a>` : "",
+          item.check_run_url ? `<a href="${escapeHtml(item.check_run_url)}" target="_blank" rel="noreferrer">check run</a>` : "",
         ].filter(Boolean).join(" | ");
         const retry = item.retry_after ? new Date(item.retry_after * 1000).toISOString() : "-";
         const lastDuration = item.last_duration_ms != null ? `${item.last_duration_ms}ms` : "-";
         const ciText = ciGate.checked_at
-          ? `ci_gate=${ciDecision.reason || ciGate.error || "ok"}`
+          ? `ci_gate=${escapeHtml(ciDecision.reason || ciGate.error || "ok")}`
           : "ci_gate=not_checked";
         const testPatch = `test_patch=${item.test_patch_applied ? "applied" : "no"}(+${item.test_patch_ops_added ?? 0}, conf=${item.test_patch_confidence ?? "-"})`;
         const strategyCfg = `strategy(max=${item.strategy_max_attempts ?? "-"}, q=${item.strategy_quarantine_threshold ?? "-"}/${item.strategy_quarantine_seconds ?? "-"})`;
-        const err = item.last_error ? `<div class="mono">error: ${String(item.last_error).slice(0, 140)}</div>` : "";
+        const manualPrompt = escapeHtml(String(item.manual_prompt || ""));
+        const err = item.last_error ? `<div class="mono">error: ${escapeHtml(String(item.last_error).slice(0, 140))}</div>` : "";
         return `
           <article class="issue">
             <div class="top">
               <span class="num">Issue #${item.issue_number}</span>
               <span class="${statusCls}">${status}</span>
             </div>
-            <div class="mono">branch: ${item.active_branch || "-"}</div>
+            <div class="mono">branch: ${escapeHtml(item.active_branch || "-")}</div>
+            <div class="mono">stage: ${stage}</div>
             <div class="mono">patch_ops=${item.patch_ops_count ?? "-"} patch_conf=${item.patch_confidence ?? "-"}</div>
-            <div class="mono">${testPatch}</div>
-            <div class="mono">${strategyCfg}</div>
+            <div class="mono">${escapeHtml(testPatch)}</div>
+            <div class="mono">${escapeHtml(strategyCfg)}</div>
             <div class="mono">last_duration=${lastDuration} ${ciText}</div>
             <div class="mono">retry_after=${retry}</div>
             <div>${links || "<span class='mono'>no PR/check link yet</span>"}</div>
-            ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${item.ai_stop_reason || "reason n/a"})</div>` : ""}
+            <textarea data-prompt="${item.issue_number}" placeholder="Add prompt and rerun this issue...">${manualPrompt}</textarea>
+            <div class="row">
+              <button data-action="prompt-rerun" data-issue="${item.issue_number}">Send + Rerun</button>
+              <button data-action="diff" data-issue="${item.issue_number}">View diff</button>
+              <button data-action="pause" data-issue="${item.issue_number}">Pause</button>
+              <button data-action="resume" data-issue="${item.issue_number}">Resume</button>
+              <button data-action="cancel" data-issue="${item.issue_number}">Cancel</button>
+              <span class="chip mono">pause until: ${escapeHtml(pauseDeadline)}</span>
+            </div>
+            <pre data-diff="${item.issue_number}">${diffPreview || "diff not recorded"}</pre>
+            <pre data-log="${item.issue_number}">${testPreview || "no test output captured"}</pre>
+            ${item.ai_stopped ? `<div class="chip bad">AI STOPPED (${escapeHtml(item.ai_stop_reason || "reason n/a")})</div>` : ""}
             ${item.pending_manual_approval ? `<div class="chip warn">pending manual approval</div>` : ""}
             ${err}
           </article>
@@ -544,28 +1513,160 @@
       el.trackedWrap.innerHTML = `<div class="issues">${cards}</div>`;
     }
 
+    function normalizeRuleResponse(payload) {
+      if (!payload || typeof payload !== "object") return { exists: false, rules_markdown: "", updated_at_utc: "" };
+      const rules = payload.rules && typeof payload.rules === "object" ? payload.rules : payload;
+      return {
+        exists: !!rules.exists,
+        rules_markdown: String(rules.rules_markdown || ""),
+        updated_at_utc: String(rules.updated_at_utc || ""),
+        scope: String(rules.scope || ""),
+        repo: rules.repo || null,
+      };
+    }
+
+    function setTextIfUnfocused(textarea, text) {
+      if (!textarea) return;
+      if (document.activeElement === textarea) return;
+      textarea.value = text || "";
+    }
+
+    function renderRules() {
+      const repo = state.selectedRepo || "";
+      const globalRules = state.rules.global || { rules_markdown: "" };
+      const projectRules = state.rules.project || { rules_markdown: "" };
+      const workerRules = state.rules.worker || { rules_markdown: "" };
+      const effective = state.rules.effective || { text: "", sources: [] };
+
+      setTextIfUnfocused(el.rulesGlobalInput, globalRules.rules_markdown || "");
+
+      if (!repo) {
+        el.rulesProjectLabel.textContent = "Project Rules (select a project)";
+        el.rulesWorkerLabel.textContent = "Worker Rules (select a project)";
+        el.rulesProjectInput.value = "";
+        el.rulesWorkerInput.value = "";
+        el.rulesProjectInput.disabled = true;
+        el.rulesWorkerInput.disabled = true;
+        el.btnSaveProjectRules.disabled = true;
+        el.btnResetProjectRules.disabled = true;
+        el.btnSaveWorkerRules.disabled = true;
+        el.btnResetWorkerRules.disabled = true;
+        el.rulesEffectivePreview.textContent = String(globalRules.rules_markdown || "No rules loaded.");
+        el.rulesMeta.textContent = "Select a project to edit project/worker rules.";
+        el.sidebarRulesStatus.textContent = `global:${globalRules.rules_markdown ? "set" : "-"} project:- worker:-`;
+        return;
+      }
+
+      el.rulesProjectLabel.textContent = `Project Rules (${repo})`;
+      el.rulesWorkerLabel.textContent = `Worker Rules (${repo})`;
+      setTextIfUnfocused(el.rulesProjectInput, projectRules.rules_markdown || "");
+      setTextIfUnfocused(el.rulesWorkerInput, workerRules.rules_markdown || "");
+      el.rulesProjectInput.disabled = false;
+      el.rulesWorkerInput.disabled = false;
+      el.btnSaveProjectRules.disabled = false;
+      el.btnResetProjectRules.disabled = false;
+      el.btnSaveWorkerRules.disabled = false;
+      el.btnResetWorkerRules.disabled = false;
+
+      const effectiveText = String(effective.text || "").trim();
+      el.rulesEffectivePreview.textContent = effectiveText || "No effective rules. Global/project/worker files are empty.";
+
+      const globalSet = !!String(globalRules.rules_markdown || "").trim();
+      const projectSet = !!String(projectRules.rules_markdown || "").trim();
+      const workerSet = !!String(workerRules.rules_markdown || "").trim();
+      el.sidebarRulesStatus.textContent = `global:${globalSet ? "set" : "-"} project:${projectSet ? "set" : "-"} worker:${workerSet ? "set" : "-"}`;
+
+      const activeSources = Array.isArray(effective.sources)
+        ? effective.sources.filter((source) => String(source.rules_markdown || "").trim()).length
+        : 0;
+      el.rulesMeta.textContent = `Repo=${repo} active rule layers=${activeSources}`;
+    }
+
     async function refreshCore() {
+      const previousSelected = state.selectedRepo;
       const [health, repos] = await Promise.all([fetchJson("/health"), fetchJson("/repos")]);
       state.health = health;
       state.repos = repos;
+      if (state.selectedRepo && !repos.find((repo) => repo.repo === state.selectedRepo)) {
+        state.selectedRepo = repos.length ? repos[0].repo : null;
+      }
       if (!state.selectedRepo && repos.length) state.selectedRepo = repos[0].repo;
+      if (previousSelected !== state.selectedRepo) sendLiveRepoSelection();
       renderHeader();
-      renderRepos();
+    }
+
+    async function refreshSetup() {
+      const [status, values] = await Promise.all([fetchJson("/setup/status"), fetchJson("/setup/values")]);
+      state.setup = status;
+      state.setupValues = values;
+      applySetupValues(values);
+      renderSetup();
+    }
+
+    async function refreshWorkers() {
+      const data = await fetchJson("/workers");
+      state.workers = Array.isArray(data.workers) ? data.workers : [];
+      renderWorkersSettings();
+    }
+
+    async function refreshProjects() {
+      const data = await fetchJson("/projects");
+      state.projects = data.projects || [];
+      state.projectsSource = data.source || "unknown";
+      rememberProjectsError(data.error || "");
+      renderProjects();
     }
 
     async function refreshSummary() {
-      if (!state.selectedRepo) return;
-      el.selectedRepoTitle.textContent = `Repository: ${state.selectedRepo}`;
+      if (!state.selectedRepo) {
+<<<<<<< ui-notes-local-llm
+        renderSummaryFromState();
+        return;
+      }
+=======
+        el.selectedRepoTitle.textContent = "repo: -";
+        return;
+      }
+      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
+>>>>>>> localstate
       const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
       state.summary = summary;
-      renderQueue(summary);
-      renderTracked(summary);
+      renderSummaryFromState();
+    }
+
+    async function refreshRules() {
+      const globalData = await fetchJson("/rules/global");
+      state.rules.global = normalizeRuleResponse(globalData);
+
+      if (!state.selectedRepo) {
+        state.rules.project = null;
+        state.rules.worker = null;
+        state.rules.effective = { text: state.rules.global.rules_markdown || "", sources: [state.rules.global] };
+        renderRules();
+        return;
+      }
+
+      const repo = state.selectedRepo;
+      const [projectData, workerData, effectiveData] = await Promise.all([
+        fetchJson(`/rules/projects/${encodeURIComponent(repo)}`),
+        fetchJson(`/rules/workers/${encodeURIComponent(repo)}`),
+        fetchJson(`/rules/effective?repo=${encodeURIComponent(repo)}`),
+      ]);
+
+      state.rules.project = normalizeRuleResponse(projectData);
+      state.rules.worker = normalizeRuleResponse(workerData);
+      state.rules.effective = {
+        text: String(effectiveData.text || ""),
+        sources: Array.isArray(effectiveData.sources) ? effectiveData.sources : [],
+      };
+      renderRules();
     }
 
     async function refreshAll() {
       try {
         await refreshCore();
         await refreshSummary();
+        await Promise.all([refreshProjects(), refreshSetup(), refreshWorkers(), refreshRules()]);
       } catch (e) {
         showToast(`refresh failed: ${e.message}`, true);
       }
@@ -581,20 +1682,63 @@
       }
     }
 
-    el.repoList.addEventListener("click", async (ev) => {
-      const btn = ev.target.closest("button");
-      if (!btn) return;
-      const repo = btn.dataset.repo;
-      const action = btn.dataset.action;
-      if (!repo || !action) return;
-      if (action === "select") {
-        state.selectedRepo = repo;
-        await refreshAll();
-        return;
-      }
-      if (action === "start") return callAction(`/run/repo/${encodeURIComponent(repo)}`, `worker started for ${repo}`);
-      if (action === "stop") return callAction(`/stop/repo/${encodeURIComponent(repo)}`, `worker stopped for ${repo}`);
+    function toggleSecretInput(input, button) {
+      const isPassword = input.type === "password";
+      input.type = isPassword ? "text" : "password";
+      button.textContent = isPassword ? "Hide" : "Show";
+    }
+
+    document.querySelectorAll(".settings-tab").forEach((btn) => {
+      btn.addEventListener("click", () => setSettingsTab(btn.dataset.settingsTab || "github"));
     });
+
+    if (el.btnShowAppId) {
+      el.btnShowAppId.addEventListener("click", () => toggleSecretInput(el.ghAppId, el.btnShowAppId));
+    }
+    if (el.btnShowInstallationId) {
+      el.btnShowInstallationId.addEventListener("click", () => toggleSecretInput(el.ghInstallationId, el.btnShowInstallationId));
+    }
+
+    if (el.btnOpenNotesEditor) {
+      el.btnOpenNotesEditor.addEventListener("click", openNotesEditor);
+    }
+
+    if (el.btnCloseNotesEditor) {
+      el.btnCloseNotesEditor.addEventListener("click", closeNotesEditor);
+<<<<<<< ui-notes-local-llm
+    }
+
+    if (el.serverTimeTzBtn) {
+      el.serverTimeTzBtn.addEventListener("click", () => {
+        const current = state.timezone || "local";
+        const input = window.prompt(
+          "Timezone (IANA), e.g. America/New_York, Europe/Berlin, UTC, or local:",
+          current,
+        );
+        if (input === null) return;
+        const normalized = normalizeTimezoneInput(input);
+        if (!normalized.ok) {
+          showToast("Invalid timezone. Use an IANA value like America/New_York or UTC.", true);
+          return;
+        }
+        state.timezone = normalized.value;
+        storage.set(TIMEZONE_KEY, state.timezone);
+        renderHeader();
+        showToast(`Timezone set: ${normalized.label}`);
+      });
+=======
+>>>>>>> localstate
+    }
+
+    document.addEventListener("input", (ev) => {
+      if (isEditableTarget(ev.target)) state.lastEditAt = Date.now();
+    }, true);
+    document.addEventListener("keydown", (ev) => {
+      if (isEditableTarget(ev.target)) state.lastEditAt = Date.now();
+    }, true);
+    document.addEventListener("paste", (ev) => {
+      if (isEditableTarget(ev.target)) state.lastEditAt = Date.now();
+    }, true);
 
     el.btnRunOnce.addEventListener("click", () => {
       if (!state.selectedRepo) return;
@@ -613,10 +1757,222 @@
 
     el.btnRefresh.addEventListener("click", refreshAll);
 
-    async function boot() {
-      await refreshAll();
-      state.refreshTimer = setInterval(refreshAll, 7000);
+    el.trackedWrap.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const issue = btn.dataset.issue;
+      const action = btn.dataset.action;
+      if (!issue || !action || !state.selectedRepo) return;
+      try {
+        if (action === "prompt-rerun") {
+          const promptInput = el.trackedWrap.querySelector(`textarea[data-prompt="${cssEscape(issue)}"]`);
+          const prompt = String(promptInput?.value || "").trim();
+          if (!prompt) {
+            showToast("Prompt is required before rerun.", true);
+            return;
+          }
+          await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/prompt-rerun`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt }),
+          });
+          showToast(`Prompt rerun sent for #${issue}`);
+          await refreshAll();
+          return;
+        }
+        if (action === "diff") {
+          const res = await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/diff`);
+          const pre = document.querySelector(`pre[data-diff="${issue}"]`);
+          if (pre) pre.textContent = res.diff || "no diff";
+          showToast("diff loaded");
+          return;
+        }
+        await fetchJson(`/pipeline/${encodeURIComponent(state.selectedRepo)}/${issue}/${action}`, { method: "POST" });
+        showToast(`${action} sent for #${issue}`);
+        await refreshSummary();
+      } catch (e) {
+        showToast(`pipeline action failed: ${e.message}`, true);
+      }
+    });
+
+    el.setupGithubForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        const fd = new FormData(ev.target);
+        await fetchJson("/setup/github", { method: "POST", body: fd });
+        showToast("GitHub IDs updated");
+        await Promise.all([refreshSetup(), refreshProjects(), refreshCore()]);
+      } catch (e) {
+        showToast(`setup save failed: ${e.message}`, true);
+      }
+    });
+
+    if (el.btnClearGithubIds) {
+      el.btnClearGithubIds.addEventListener("click", async () => {
+        const ok = window.confirm("Clear GitHub owner, app ID, and installation ID?");
+        if (!ok) return;
+        try {
+          await fetchJson("/setup/github/clear", { method: "POST" });
+          el.ghOwner.value = "";
+          el.ghAppId.value = "";
+          el.ghInstallationId.value = "";
+          showToast("GitHub IDs cleared");
+          await Promise.all([refreshSetup(), refreshProjects(), refreshCore(), refreshWorkers()]);
+        } catch (e) {
+          showToast(`clear failed: ${e.message}`, true);
+        }
+      });
     }
+
+    el.setupPemForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        const fd = new FormData(ev.target);
+        await fetchJson("/setup/pem", { method: "POST", body: fd });
+        showToast("PEM uploaded");
+        ev.target.reset();
+        await refreshSetup();
+      } catch (e) {
+        showToast(`pem upload failed: ${e.message}`, true);
+      }
+    });
+
+    el.setupLlmForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        const fd = new FormData(ev.target);
+        await fetchJson("/setup/llm", { method: "POST", body: fd });
+        showToast("LLM settings saved");
+        el.openaiApiKey.value = "";
+        el.localLlmApiKey.value = "";
+        el.openaiApiKeyClear.checked = false;
+        el.localLlmApiKeyClear.checked = false;
+        await refreshSetup();
+      } catch (e) {
+        showToast(`llm setup save failed: ${e.message}`, true);
+      }
+    });
+
+    el.projectsList.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const repo = btn.dataset.project;
+      const action = btn.dataset.action;
+      if (!repo || !action) return;
+      try {
+        const repoItem = itemByRepo(repo);
+        if (action === "select") {
+          state.selectedRepo = repo;
+          sendLiveRepoSelection();
+          await refreshAll();
+          return;
+        }
+        if (action === "start") return callAction(`/run/repo/${encodeURIComponent(repo)}`, `worker started for ${repo}`);
+        if (action === "stop") return callAction(`/stop/repo/${encodeURIComponent(repo)}`, `worker stopped for ${repo}`);
+        if (action === "auto-toggle") {
+          const endpoint = repoItem?.automation ? "disable" : "enable";
+          return callAction(`/automation/${encodeURIComponent(repo)}/${endpoint}`, `automation ${endpoint}d for ${repo}`);
+        }
+        if (action === "set-gate") {
+          const autoCheckbox = el.projectsList.querySelector(`input[data-project-gate-auto='${cssEscape(repo)}']`);
+          const secondsInput = el.projectsList.querySelector(`input[data-project-gate-seconds='${cssEscape(repo)}']`);
+          const autoEnabled = !!autoCheckbox?.checked;
+          let mode = "manual";
+          if (autoEnabled) {
+            const rawSeconds = Number(secondsInput?.value || 10);
+            if (!Number.isFinite(rawSeconds) || rawSeconds < 1 || rawSeconds > 86400) {
+              showToast("Gate seconds must be an integer between 1 and 86400.", true);
+              return;
+            }
+            const seconds = Math.trunc(rawSeconds);
+            mode = `auto_${seconds}s`;
+          }
+          await fetchJson(`/projects/${encodeURIComponent(repo)}/push-gate?mode=${encodeURIComponent(mode)}`, { method: "POST" });
+          showToast(`project gate set: ${repo} -> ${mode}`);
+        } else {
+          await fetchJson(`/projects/${encodeURIComponent(repo)}/${action}`, { method: "POST" });
+          showToast(`project ${action}d: ${repo}`);
+        }
+        await Promise.all([refreshProjects(), refreshCore(), refreshRules()]);
+      } catch (e) {
+        showToast(`project update failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnSaveGlobalRules.addEventListener("click", async () => {
+      try {
+        await fetchJson("/rules/global", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rules_markdown: el.rulesGlobalInput.value || "" }),
+        });
+        showToast("Global rules saved");
+        await refreshRules();
+      } catch (e) {
+        showToast(`save failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnSaveProjectRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/projects/${encodeURIComponent(state.selectedRepo)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rules_markdown: el.rulesProjectInput.value || "" }),
+        });
+        showToast("Project rules saved");
+        await refreshRules();
+      } catch (e) {
+        showToast(`save failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnResetProjectRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/projects/${encodeURIComponent(state.selectedRepo)}`, { method: "DELETE" });
+        showToast("Project rules reset to global");
+        await refreshRules();
+      } catch (e) {
+        showToast(`reset failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnSaveWorkerRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/workers/${encodeURIComponent(state.selectedRepo)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rules_markdown: el.rulesWorkerInput.value || "" }),
+        });
+        showToast("Worker rules saved");
+        await refreshRules();
+      } catch (e) {
+        showToast(`save failed: ${e.message}`, true);
+      }
+    });
+
+    el.btnResetWorkerRules.addEventListener("click", async () => {
+      if (!state.selectedRepo) return;
+      try {
+        await fetchJson(`/rules/workers/${encodeURIComponent(state.selectedRepo)}`, { method: "DELETE" });
+        showToast("Worker rules reset to project");
+        await refreshRules();
+      } catch (e) {
+        showToast(`reset failed: ${e.message}`, true);
+      }
+    });
+
+    async function boot() {
+      initSidebarChrome();
+      const savedTimezone = normalizeTimezoneInput(storage.get(TIMEZONE_KEY, "local"));
+      state.timezone = savedTimezone.ok ? savedTimezone.value : "local";
+      await refreshAll();
+      connectLiveSocket();
+    }
+
     boot();
   </script>
 </body>
