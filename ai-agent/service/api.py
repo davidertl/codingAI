@@ -991,8 +991,16 @@ def _project_default_push_gate_modes(repos: list[str]) -> dict[str, str]:
 
 
 def _project_rows(repos: list[str]):
+<<<<<<< ui-notes-local-llm
     defaults = _project_default_push_gate_modes(repos)
     return list_projects_store(repos, default_push_gate_by_repo=defaults)
+=======
+    state = main.load_state()
+    state_enabled_repos = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
+    defaults = _project_default_push_gate_modes(repos)
+    migrate_projects_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
+    return list_projects_store(repos, state_enabled_repos=state_enabled_repos, default_push_gate_by_repo=defaults)
+>>>>>>> localstate
 
 
 def _validate_project_repo(repo: str, repos: list[str]):

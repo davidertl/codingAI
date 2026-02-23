@@ -38,6 +38,15 @@ _PEM_CANONICAL = (_PEM_DIR / "github-app.pem").resolve()
 def _resolve_pem_path() -> Path:
     if _pem_raw:
         return Path(_pem_raw).expanduser().resolve()
+<<<<<<< ui-notes-local-llm
+=======
+    if _PEM_CANONICAL.exists():
+        return _PEM_CANONICAL
+    if _PEM_DIR.exists():
+        candidates = sorted(_PEM_DIR.glob("*.pem"))
+        if candidates:
+            return candidates[0].resolve()
+>>>>>>> localstate
     return _PEM_CANONICAL
 
 

@@ -94,6 +94,10 @@ def _upsert_project(
 def seed_projects_if_needed(
     repo_names: list[str],
     *,
+<<<<<<< ui-notes-local-llm
+=======
+    state_enabled_repos: list[str] | None = None,
+>>>>>>> localstate
     default_push_gate_by_repo: dict[str, str] | None = None,
 ):
     init_db()
@@ -106,10 +110,20 @@ def seed_projects_if_needed(
         cur = conn.execute("SELECT repo, enabled, push_gate_mode FROM projects")
         existing_rows = cur.fetchall()
         existing = {str(row["repo"]): row for row in existing_rows}
+<<<<<<< ui-notes-local-llm
+=======
+        state_enabled_set = set(str(r).strip() for r in (state_enabled_repos or []) if str(r).strip())
+        explicit_state_seed = state_enabled_repos is not None
+        empty_table = len(existing) == 0
+>>>>>>> localstate
 
         for repo in cleaned:
             if repo in existing:
                 continue
+<<<<<<< ui-notes-local-llm
+=======
+            enabled = (repo in state_enabled_set) if explicit_state_seed else True
+>>>>>>> localstate
             default_mode = _normalize_push_gate_mode(default_push_gate_by_repo.get(repo), default="auto_10s")
             _upsert_project(
                 conn,
@@ -126,10 +140,18 @@ def seed_projects_if_needed(
 def list_projects(
     repo_names: list[str],
     *,
+<<<<<<< ui-notes-local-llm
+=======
+    state_enabled_repos: list[str] | None = None,
+>>>>>>> localstate
     default_push_gate_by_repo: dict[str, str] | None = None,
 ) -> list[dict]:
     seed_projects_if_needed(
         repo_names,
+<<<<<<< ui-notes-local-llm
+=======
+        state_enabled_repos=state_enabled_repos,
+>>>>>>> localstate
         default_push_gate_by_repo=default_push_gate_by_repo,
     )
     if not repo_names:
@@ -231,3 +253,23 @@ def get_project_push_gate_mode(repo: str, *, default: str = "auto_10s") -> str:
     if not row:
         return _normalize_push_gate_mode(default)
     return _normalize_push_gate_mode(row["push_gate_mode"], default=default)
+<<<<<<< ui-notes-local-llm
+=======
+
+
+def migrate_from_state(
+    *,
+    repo_names: list[str],
+    state: dict | None,
+    default_push_gate_by_repo: dict[str, str] | None = None,
+):
+    state = state or {}
+    state_enabled_repos = state.get("projects_enabled") if isinstance(state, dict) else None
+    if state_enabled_repos is not None and not isinstance(state_enabled_repos, list):
+        state_enabled_repos = None
+    seed_projects_if_needed(
+        repo_names,
+        state_enabled_repos=state_enabled_repos,
+        default_push_gate_by_repo=default_push_gate_by_repo,
+    )
+>>>>>>> localstate

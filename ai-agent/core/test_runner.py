@@ -961,6 +961,7 @@ def _playwright_dashboard_checks(page, base_url: str):
         if not queue_actions_present:
             ok = False
 
+<<<<<<< ui-notes-local-llm
         tracked_cards = page.locator("#trackedWrap .issue")
         tracked_cards_count = tracked_cards.count()
         lines.append(f"tracked_cards_count={tracked_cards_count}")
@@ -972,6 +973,8 @@ def _playwright_dashboard_checks(page, base_url: str):
             if not prompt_field_present or not rerun_button_present:
                 ok = False
 
+=======
+>>>>>>> localstate
         notes_visible_initial = page.locator("#notesEditor").first.is_visible()
         lines.append(f"notes_visible_initial={notes_visible_initial}")
         if notes_visible_initial:

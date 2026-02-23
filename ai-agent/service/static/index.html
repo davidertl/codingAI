@@ -944,6 +944,7 @@
       showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
     }
 
+<<<<<<< ui-notes-local-llm
     function rememberProjectsError(message) {
       const text = String(message || "").trim();
       if (!text) {
@@ -1018,6 +1019,8 @@
       return { main, sub: `${datePart} • ${zonePart} • ${sourcePart}`, zone };
     }
 
+=======
+>>>>>>> localstate
     function openNotesEditor() {
       const editor = document.getElementById("notesEditor");
       if (!editor) return;
@@ -1616,9 +1619,16 @@
 
     async function refreshSummary() {
       if (!state.selectedRepo) {
+<<<<<<< ui-notes-local-llm
         renderSummaryFromState();
         return;
       }
+=======
+        el.selectedRepoTitle.textContent = "repo: -";
+        return;
+      }
+      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
+>>>>>>> localstate
       const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
       state.summary = summary;
       renderSummaryFromState();
@@ -1695,6 +1705,7 @@
 
     if (el.btnCloseNotesEditor) {
       el.btnCloseNotesEditor.addEventListener("click", closeNotesEditor);
+<<<<<<< ui-notes-local-llm
     }
 
     if (el.serverTimeTzBtn) {
@@ -1715,6 +1726,8 @@
         renderHeader();
         showToast(`Timezone set: ${normalized.label}`);
       });
+=======
+>>>>>>> localstate
     }
 
     document.addEventListener("input", (ev) => {
