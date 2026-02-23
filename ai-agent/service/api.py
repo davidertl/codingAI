@@ -24,6 +24,7 @@ from core.observability import (
     set_gauge,
     redact_dict,
 )
+from core.sandbox_runner_client import should_use_sandbox_mode
 from core.projects_store import list_projects as list_projects_store
 from core.projects_store import migrate_from_state as migrate_projects_from_state
 from core.projects_store import set_project_push_gate_mode as set_project_push_gate_mode_store
@@ -33,6 +34,10 @@ from core.rules_store import effective_rules as effective_rules_store
 from core.rules_store import read_rules as read_rules_store
 from core.rules_store import write_rules as write_rules_store
 from core.research import research
+from orchestrator.state_store import get_run as get_orchestrator_run
+from orchestrator.state_store import list_artifacts as list_orchestrator_artifacts
+from orchestrator.state_store import list_attempts as list_orchestrator_attempts
+from orchestrator.state_store import list_runs as list_orchestrator_runs
 from core.chat_store import (
     create_attachment as create_chat_attachment,
     create_message as create_chat_message,
@@ -236,7 +241,7 @@ class WorkerManager:
 
 
 manager = WorkerManager()
-app = FastAPI(title="CodingAI Control Plane", version="0.4.0")
+app = FastAPI(title="CodingAI Control Plane", version="experimental-0.22.0")
 app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
@@ -334,6 +339,7 @@ def health():
     llm_ready = ensure_llm_ready(force=False)
     llm_runtime = get_llm_runtime_status()
     setup = setup_status()
+    last_orchestrator_run = list_orchestrator_runs(limit=1)
     set_gauge("codingai_workers_running", len([w for w in manager.list_workers() if w.get("running")]))
     return {
         "status": "ok",
@@ -346,6 +352,9 @@ def health():
         "llm_telemetry_file": llm_runtime.get("telemetry_file"),
         "setup_required": not bool(setup.get("setup_complete")),
         "setup": setup,
+        "orchestrator_v2_enabled": bool(main.ORCHESTRATOR_V2_ENABLED),
+        "runner_mode": "sandbox_api" if should_use_sandbox_mode() else "legacy_local",
+        "last_orchestrator_run": (last_orchestrator_run[0] if last_orchestrator_run else None),
     }
 
 
@@ -1595,6 +1604,43 @@ def events(limit: int = 100, repo: str | None = None, event: str | None = None):
         "time_utc": _utc_now_iso(),
         "count": len(items),
         "events": items,
+    }
+
+
+@app.get("/orchestration/runs")
+def orchestration_runs(repo: str | None = None, limit: int = 50):
+    rows = list_orchestrator_runs(repo=repo, limit=max(1, min(int(limit), 500)))
+    return {
+        "time_utc": _utc_now_iso(),
+        "count": len(rows),
+        "runs": rows,
+    }
+
+
+@app.get("/orchestration/runs/{run_id}")
+def orchestration_run(run_id: str, attempts_limit: int = 300):
+    run = get_orchestrator_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Unknown orchestrator run '{run_id}'")
+    attempts = list_orchestrator_attempts(run_id, limit=max(1, min(int(attempts_limit), 2000)))
+    return {
+        "time_utc": _utc_now_iso(),
+        "run": run,
+        "attempts": attempts,
+    }
+
+
+@app.get("/orchestration/runs/{run_id}/artifacts")
+def orchestration_run_artifacts(run_id: str, limit: int = 200):
+    run = get_orchestrator_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Unknown orchestrator run '{run_id}'")
+    artifacts = list_orchestrator_artifacts(run_id, limit=max(1, min(int(limit), 2000)))
+    return {
+        "time_utc": _utc_now_iso(),
+        "run_id": run_id,
+        "count": len(artifacts),
+        "artifacts": artifacts,
     }
 
 

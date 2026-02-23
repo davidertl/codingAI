@@ -1,9 +1,9 @@
 # Current State
-Version: experimental-0.21.1
+Version: experimental-0.22.0
 
 This reflects verified code/runtime state for `ai-agent/` on branch `localstate` as checked on 2026-02-23 (UTC).
 
-## Phase status (1-21)
+## Phase status (1-22)
 
 1. `Phase 1 - Real patch generation`: Implemented
 2. `Phase 2 - PR comment automation`: Implemented
@@ -26,6 +26,7 @@ This reflects verified code/runtime state for `ai-agent/` on branch `localstate`
 19. `Phase 19 - Memory & reuse`: Implemented
 20. `Phase 20 - Secrets & safety (local)`: Partially implemented
 21. `Phase 21 - Autonomous mode & self-tasks`: Partially implemented
+22. `Phase 22 - Deterministic orchestration V2`: Partially implemented (contracts/roles/engine/API implemented; currently wired as preflight gate via feature flag)
 
 ## 2026-02-23 revalidation highlights
 
@@ -46,6 +47,15 @@ This reflects verified code/runtime state for `ai-agent/` on branch `localstate`
      - Refresh
      - Project enable/disable/enable
      - Automation enable/disable
+6. Orchestrator V2:
+   - Added strict contracts + policy validators under `ai-agent/orchestrator/`.
+   - Added role modules (`ingest`, `planner`, `researcher`, `coder`, `reviewer`, `test_interpreter`, `judge`).
+   - Added run persistence (`orchestrator_runs`, `orchestrator_attempts`, `orchestrator_artifacts`) in `state.db`.
+   - Added orchestration APIs:
+     - `GET /orchestration/runs`
+     - `GET /orchestration/runs/{run_id}`
+     - `GET /orchestration/runs/{run_id}/artifacts`
+   - Added sandbox execution boundary adapter (`core/sandbox_runner_client.py`) with `RUNNER_MODE=sandbox_api`.
 
 ## Evidence snapshot
 
@@ -66,5 +76,6 @@ This reflects verified code/runtime state for `ai-agent/` on branch `localstate`
 4. Phase 15 (chat/repo UX) is pending.
 5. Phase 20 prompt-safety filter is not yet implemented.
 6. Phase 21 missing-feature self-task issue creation is not yet implemented.
+7. Full V2 replacement mode is not yet active by default; currently `ORCHESTRATOR_V2_ENABLED` runs as preflight before legacy patch/test flow.
 
 Implementation plan for all open roadmap items: `docs/implementation-plan.md`.

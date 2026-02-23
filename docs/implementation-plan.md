@@ -1,8 +1,21 @@
 # CodingAI Implementation Plan (Docs ↔ Code Gaps)
-Version: experimental-0.21.1
+Version: experimental-0.22.0
 Last updated: 2026-02-23 (UTC)
 
 This plan tracks roadmap features that are documented but missing/partial on `localstate` (plus a few security-critical prerequisites).
+
+## Update: Orchestrator V2 baseline (2026-02-23)
+
+- Deterministic orchestration scaffolding is now present under `ai-agent/orchestrator/`:
+  - typed contracts
+  - role executors
+  - policy/security validators
+  - run persistence in `state.db`
+- Control plane endpoints for orchestration run inspection are available:
+  - `GET /orchestration/runs`
+  - `GET /orchestration/runs/{run_id}`
+  - `GET /orchestration/runs/{run_id}/artifacts`
+- `ORCHESTRATOR_V2_ENABLED` currently enables a V2 preflight gate before the legacy patch/test/push pipeline.
 
 ## Docs provenance (what introduced the missing features)
 

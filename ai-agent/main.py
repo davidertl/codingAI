@@ -12,6 +12,7 @@ from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
 from core.projects_store import get_project_push_gate_mode
 from core.test_runner import analyze_repo, run_tests
+from orchestrator.engine import OrchestratorEngine
 from github.checks_manager import create_completed_check_run
 from github.ci_status import get_pr_ci_status
 from github.git_api_commit import (
@@ -50,11 +51,13 @@ if TARGET_REPOS_ENV:
 POLL_INTERVAL = 300
 REPORT_MARKER = "<!-- codingai-test-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
+ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 PAUSE_WINDOW_SECONDS = int(os.getenv("CODINGAI_PAUSE_WINDOW_SECONDS", "10") or "10")
 MAX_PAUSE_SECONDS = int(os.getenv("CODINGAI_MAX_PAUSE_SECONDS", "300") or "300")
 
 load_dotenv(str(ENV_FILE))
+ORCHESTRATOR_V2 = OrchestratorEngine()
 
 
 def load_state():
@@ -991,6 +994,46 @@ def process_issue(repo, issue, state, policy=None):
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
         repo_analysis = analyze_repo(repo_path)
+        if ORCHESTRATOR_V2_ENABLED:
+            _set_pipeline_stage(state, repo, number, "orchestrator_v2_preflight", active_branch=branch)
+            v2_result = ORCHESTRATOR_V2.run_issue(
+                repo_name=repo,
+                issue=issue,
+                repo_path=repo_path,
+                repo_analysis=repo_analysis,
+                strategy_policy=strategy_policy,
+            )
+            issue_state["orchestrator_v2_run_id"] = str(v2_result.run_id)
+            issue_state["orchestrator_v2_status"] = str(v2_result.run_outcome.status)
+            issue_state["orchestrator_v2_attempts"] = int(v2_result.run_outcome.attempts_count or 0)
+            issue_state["orchestrator_v2_summary"] = str(v2_result.run_outcome.summary or "")[:2000]
+            issue_state["orchestrator_v2_used_redundancy"] = bool(v2_result.used_redundancy)
+            issue_state["orchestrator_v2_success_criteria"] = v2_result.run_outcome.success_criteria
+            save_state(state)
+            if v2_result.run_outcome.status != "success":
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Orchestrator V2 preflight failed for issue #{number}.",
+                    v2_result.run_outcome.error_reason or v2_result.run_outcome.summary,
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+            record_event(
+                "orchestrator_v2_preflight_passed",
+                repo=repo,
+                issue_number=number,
+                status="ok",
+                data={
+                    "run_id": v2_result.run_id,
+                    "attempts": int(v2_result.run_outcome.attempts_count or 0),
+                    "used_redundancy": bool(v2_result.used_redundancy),
+                },
+            )
+            _checkout_local_branch_at_sha(repo_path, branch, base_sha)
+
         _set_pipeline_stage(state, repo, number, "patching", active_branch=branch)
         patch_started = time.time()
         patch_result = propose_patch_ops(
