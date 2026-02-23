@@ -77,7 +77,7 @@ In a second shell:
 curl -s http://127.0.0.1:8010/health
 curl -s http://127.0.0.1:8010/repos
 curl -s http://127.0.0.1:8010/policies
-curl -s http://127.0.0.1:8010/repo/KRT-leadtool/summary
+curl -s http://127.0.0.1:8010/repo/<repo-name>/summary
 ```
 
 ## Run modes
@@ -113,7 +113,7 @@ Volumes (host): `.env`, `github_app/`, `logs/`, `state.json`, `workspaces/`.
 
 ## Common env toggles
 
-1. `TARGET_REPOS=KRT-leadtool,KRT-Com_Discord`
+1. `TARGET_REPOS=<repo-a>,<repo-b>`
 2. `MANUAL_APPROVAL_REQUIRED=true`
 3. `PR_AUTO_UPDATE_ENABLED=true`
 4. `ENABLE_GITHUB_CHECKS=true`
@@ -149,13 +149,13 @@ curl -s http://127.0.0.1:8000/health
 ### Repo summary
 
 ```bash
-curl -s http://127.0.0.1:8000/repo/KRT-leadtool/summary
+curl -s http://127.0.0.1:8000/repo/<repo-name>/summary
 ```
 
 ### Policy inspection
 
 ```bash
-curl -s http://127.0.0.1:8000/policy/KRT-leadtool
+curl -s http://127.0.0.1:8000/policy/<repo-name>
 curl -s http://127.0.0.1:8000/policies
 ```
 
@@ -164,13 +164,13 @@ curl -s http://127.0.0.1:8000/policies
 ```bash
 curl -s http://127.0.0.1:8000/metrics
 curl -s http://127.0.0.1:8000/metrics/json
-curl -s "http://127.0.0.1:8000/events?limit=50&repo=KRT-leadtool"
+curl -s "http://127.0.0.1:8000/events?limit=50&repo=<repo-name>"
 ```
 
 ### CI status inspection
 
 ```bash
-curl -s http://127.0.0.1:8000/ci/KRT-leadtool/1
+curl -s http://127.0.0.1:8000/ci/<repo-name>/1
 ```
 
 ### Autonomy policy quick example
@@ -194,7 +194,7 @@ curl -s http://127.0.0.1:8000/ci/KRT-leadtool/1
 ### Run one cycle
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/run-once/repo/KRT-leadtool
+curl -s -X POST http://127.0.0.1:8000/run-once/repo/<repo-name>
 ```
 
 ## Troubleshooting

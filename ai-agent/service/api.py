@@ -51,7 +51,7 @@ import main
 from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
 from github.repo_manager import ensure_repo_mirror
-from llm.provider import ensure_llm_ready, get_llm_runtime_status
+from llm.provider import ensure_llm_ready, get_llm_runtime_status, get_local_model_status
 import llm.provider as llm_provider_runtime
 from llm.chat_llm import chat_completion, route_for_task
 from paths import ENV_FILE, GITHUB_APP_PEM_FILE, setup_status
@@ -362,7 +362,9 @@ def setup_status_api():
 @app.get("/setup/values")
 def setup_values_api():
     env_values = _read_env_entries()
-    return {
+    local_model_status = get_local_model_status(timeout=1.2)
+    local_model_error = str(local_model_status.get("error") or "").strip()
+    payload = {
         "owner": _read_env_value(env_values, "GITHUB_OWNER"),
         "app_id": _read_env_value(env_values, "GITHUB_APP_ID"),
         "installation_id": _read_env_value(env_values, "GITHUB_INSTALLATION_ID"),
@@ -375,7 +377,12 @@ def setup_values_api():
         "local_llm_profile": _read_env_value(env_values, "LOCAL_LLM_PROFILE", "auto"),
         "local_llm_model": _read_env_value(env_values, "LOCAL_LLM_MODEL"),
         "local_llm_api_key_set": bool(_read_env_value(env_values, "LOCAL_LLM_API_KEY")),
+        "local_models_count": int(local_model_status.get("models_count", 0)),
+        "local_model_ready": bool(local_model_status.get("ready")),
     }
+    if local_model_error:
+        payload["local_model_error"] = local_model_error
+    return payload
 
 
 def _sanitize_env_key(key: str) -> str:

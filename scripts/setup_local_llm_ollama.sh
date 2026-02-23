@@ -18,13 +18,18 @@ trim() {
 
 split_csv_into_array() {
   local csv="${1:-}"
-  local -n out_ref="$2"
-  out_ref=()
+  local target_name="${2:-}"
+  if [[ -z "$target_name" ]]; then
+    echo "split_csv_into_array requires an output variable name." >&2
+    return 1
+  fi
+  local -n target_ref="$target_name"
+  target_ref=()
   IFS=',' read -ra raw <<<"$csv"
   for item in "${raw[@]}"; do
     item="$(trim "$item")"
     if [[ -n "$item" ]]; then
-      out_ref+=("$item")
+      target_ref+=("$item")
     fi
   done
 }
@@ -44,7 +49,12 @@ detect_vram_gb() {
 
 pick_candidates() {
   local requested="${1:-auto}"
-  local -n out_ref="$2"
+  local out_name="${2:-}"
+  if [[ -z "$out_name" ]]; then
+    echo "pick_candidates requires an output variable name." >&2
+    return 1
+  fi
+  local -n out_ref="$out_name"
   local requested_profile=""
   if [[ "$requested" == "auto" ]]; then
     requested_profile="$(trim "${LOCAL_LLM_PROFILE:-}")"
@@ -54,39 +64,39 @@ pick_candidates() {
   fi
 
   if [[ "$requested_profile" == "gpu16" ]]; then
-    split_csv_into_array "$GPU16_CANDIDATES" out_ref
+    split_csv_into_array "$GPU16_CANDIDATES" "$out_name"
     echo "Model profile: gpu16 (forced)"
     return 0
   fi
   if [[ "$requested_profile" == "gpu24" ]]; then
-    split_csv_into_array "$GPU24_CANDIDATES" out_ref
+    split_csv_into_array "$GPU24_CANDIDATES" "$out_name"
     echo "Model profile: gpu24 (forced)"
     return 0
   fi
   if [[ "$requested_profile" == "cpu" ]]; then
-    split_csv_into_array "$CPU_FALLBACK_CANDIDATES" out_ref
+    split_csv_into_array "$CPU_FALLBACK_CANDIDATES" "$out_name"
     echo "Model profile: cpu (forced)"
     return 0
   fi
 
   if [[ "$requested" != "auto" ]]; then
-    split_csv_into_array "$requested" out_ref
+    split_csv_into_array "$requested" "$out_name"
     return 0
   fi
 
   local vram_gb=""
   if vram_gb="$(detect_vram_gb)"; then
     if [[ "$vram_gb" -ge 24 ]]; then
-      split_csv_into_array "$GPU24_CANDIDATES" out_ref
+      split_csv_into_array "$GPU24_CANDIDATES" "$out_name"
       echo "Model profile: gpu>=24gb (detected ${vram_gb}GB VRAM)"
       return 0
     fi
-    split_csv_into_array "$GPU16_CANDIDATES" out_ref
+    split_csv_into_array "$GPU16_CANDIDATES" "$out_name"
     echo "Model profile: gpu<24gb (detected ${vram_gb}GB VRAM)"
     return 0
   fi
 
-  split_csv_into_array "$CPU_FALLBACK_CANDIDATES" out_ref
+  split_csv_into_array "$CPU_FALLBACK_CANDIDATES" "$out_name"
   echo "Model profile: cpu-only fallback (no NVIDIA GPU detected)"
   return 0
 }
@@ -101,9 +111,9 @@ pull_first_available_model() {
     return 1
   fi
 
-  echo "Resolved model candidates (priority order): ${candidates_ref[*]}"
+  echo "Resolved model candidates (priority order): ${candidates_ref[*]}" >&2
   for model in "${candidates_ref[@]}"; do
-    echo "Pulling model: ${model}"
+    echo "Pulling model: ${model}" >&2
     if docker exec "$CONTAINER_NAME" ollama pull "$model"; then
       selected="$model"
       break
@@ -161,6 +171,7 @@ export LOCAL_LLM_BASE_URL=http://127.0.0.1:${PORT}
 export LOCAL_LLM_API_MODE=chat
 export LOCAL_LLM_MODEL=${SELECTED_MODEL}
 EOF
+echo "SELECTED_MODEL=${SELECTED_MODEL}"
 
 if command -v curl >/dev/null 2>&1; then
   echo

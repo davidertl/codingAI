@@ -375,6 +375,14 @@
       color: var(--muted);
       font-size: 0.82rem;
     }
+    .msg.warn {
+      border-color: rgba(240, 189, 79, 0.6);
+      color: #f2d9a4;
+    }
+    .msg.ok {
+      border-color: rgba(38, 213, 139, 0.5);
+      color: #bdeed8;
+    }
 
     table {
       width: 100%;
@@ -526,6 +534,7 @@
           </div>
 
           <div class="settings-pane" data-settings-pane="github">
+            <div class="msg" id="githubSetupHint">GitHub IDs fehlen → /projects bleibt leer (bis die App-Daten gesetzt sind).</div>
             <form class="stack" id="setupGithubForm">
               <div class="form-grid">
                 <div>
@@ -560,6 +569,7 @@
           </div>
 
           <div class="settings-pane" data-settings-pane="llm">
+            <div class="msg" id="llmModelHint">Kein Local Model verfügbar → LLM-Calls schlagen fehl.</div>
             <form class="stack" id="setupLlmForm">
               <div class="form-grid">
                 <div>
@@ -755,6 +765,8 @@
       toast: document.getElementById("toast"),
       setupStatus: document.getElementById("setupStatus"),
       setupMeta: document.getElementById("setupMeta"),
+      githubSetupHint: document.getElementById("githubSetupHint"),
+      llmModelHint: document.getElementById("llmModelHint"),
       pemStatus: document.getElementById("pemStatus"),
       setupGithubForm: document.getElementById("setupGithubForm"),
       setupLlmForm: document.getElementById("setupLlmForm"),
@@ -985,11 +997,40 @@
       const s = state.setup || {};
       const v = state.setupValues || {};
       const ok = s.setup_complete;
+      const hasGithubIds = !!(s.has_owner && s.has_app_id && s.has_installation_id);
+      const localModelsCount = Number(v.local_models_count || 0);
+      const localModelReady = !!v.local_model_ready;
+      const localModelError = String(v.local_model_error || "").trim();
       el.setupStatus.className = ok ? "chip ok" : "chip warn";
       el.setupStatus.textContent = ok ? "READY" : "INCOMPLETE";
       el.setupMeta.textContent = `owner=${s.has_owner ? "Y" : "N"} app=${s.has_app_id ? "Y" : "N"} install=${s.has_installation_id ? "Y" : "N"} pem=${s.pem_exists ? "Y" : "N"}`;
       el.pemStatus.textContent = s.pem_exists ? "PEM present (0600)" : "PEM missing";
-      el.llmSetupStatus.textContent = `provider=${v.llm_provider || "-"} order=${v.llm_provider_order || "-"} profile=${v.local_llm_profile || "-"} openai_key=${v.openai_api_key_set ? "set" : "missing"} local_key=${v.local_llm_api_key_set ? "set" : "missing"}`;
+      el.llmSetupStatus.textContent = `provider=${v.llm_provider || "-"} order=${v.llm_provider_order || "-"} profile=${v.local_llm_profile || "-"} local_models=${localModelsCount} openai_key=${v.openai_api_key_set ? "set" : "missing"} local_key=${v.local_llm_api_key_set ? "set" : "missing"}`;
+
+      if (el.githubSetupHint) {
+        if (hasGithubIds) {
+          el.githubSetupHint.textContent = "GitHub IDs gesetzt. /projects wird über die Installation geladen.";
+          el.githubSetupHint.classList.remove("warn");
+          el.githubSetupHint.classList.add("ok");
+        } else {
+          el.githubSetupHint.textContent = "GitHub IDs fehlen → /projects bleibt leer (bis die App-Daten gesetzt sind).";
+          el.githubSetupHint.classList.add("warn");
+          el.githubSetupHint.classList.remove("ok");
+        }
+      }
+
+      if (el.llmModelHint) {
+        if (localModelReady) {
+          el.llmModelHint.textContent = `Local model inventory ready (${localModelsCount} model${localModelsCount === 1 ? "" : "s"}).`;
+          el.llmModelHint.classList.remove("warn");
+          el.llmModelHint.classList.add("ok");
+        } else {
+          const suffix = localModelError ? ` (${localModelError})` : "";
+          el.llmModelHint.textContent = `Kein Local Model verfügbar → LLM-Calls schlagen fehl${suffix}.`;
+          el.llmModelHint.classList.add("warn");
+          el.llmModelHint.classList.remove("ok");
+        }
+      }
     }
 
     function applySetupValues(values) {
