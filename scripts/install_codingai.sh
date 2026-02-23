@@ -265,6 +265,7 @@ fi
 echo
 LOCAL_LLM_MODEL_INSTALL_DEFAULT="$(read_env_entry "$ENV_FILE" "LOCAL_LLM_PROFILE")"
 LOCAL_LLM_MODEL_INSTALL_DEFAULT="${LOCAL_LLM_MODEL_INSTALL_DEFAULT:-auto}"
+LOCAL_LLM_PULL_MODE="${LOCAL_LLM_PULL_MODE:-background}"
 echo "Local LLM model profile options:"
 echo "  - auto (recommended): GPU/VRAM based profile"
 echo "  - fixed profile: gpu16 | gpu24 | cpu"
@@ -272,15 +273,25 @@ echo "  - explicit model: mistral:7b | qwen2.5-coder:7b | starcoder2:7b | qwen2.
 echo "  - explicit CSV fallback chain: mistral:7b,qwen2.5-coder:7b,starcoder2:7b"
 read -r -p "Local LLM model/profile to install [$LOCAL_LLM_MODEL_INSTALL_DEFAULT]: " LOCAL_LLM_MODEL_INSTALL
 LOCAL_LLM_MODEL_INSTALL="${LOCAL_LLM_MODEL_INSTALL:-$LOCAL_LLM_MODEL_INSTALL_DEFAULT}"
-echo "Installing local LLM runtime via Ollama Docker..."
+if [[ "$LOCAL_LLM_PULL_MODE" == "background" ]]; then
+  echo "Installing local LLM runtime via Ollama Docker (background model pull)..."
+else
+  echo "Installing local LLM runtime via Ollama Docker (foreground model pull)..."
+fi
 LOCAL_LLM_INSTALL_LOG="$(mktemp)"
-if ! run_as_install_user bash "$REPO_ROOT/scripts/setup_local_llm_ollama.sh" "$LOCAL_LLM_MODEL_INSTALL" 2>&1 | tee "$LOCAL_LLM_INSTALL_LOG"; then
+if ! run_as_install_user env \
+  LOCAL_LLM_PULL_MODE="$LOCAL_LLM_PULL_MODE" \
+  LOCAL_LLM_ENV_FILE="$ENV_FILE" \
+  bash "$REPO_ROOT/scripts/setup_local_llm_ollama.sh" "$LOCAL_LLM_MODEL_INSTALL" 2>&1 | tee "$LOCAL_LLM_INSTALL_LOG"; then
   rm -f "$LOCAL_LLM_INSTALL_LOG"
   echo "Local LLM install step failed. See output above." >&2
   exit 1
 fi
 
 SELECTED_MODEL="$(sed -n 's/^SELECTED_MODEL=//p' "$LOCAL_LLM_INSTALL_LOG" | tail -n1 | tr -d '\r')"
+BACKGROUND_PULL_PID="$(sed -n 's/^BACKGROUND_PULL_PID=//p' "$LOCAL_LLM_INSTALL_LOG" | tail -n1 | tr -d '\r')"
+BACKGROUND_PULL_LOG="$(sed -n 's/^BACKGROUND_PULL_LOG=//p' "$LOCAL_LLM_INSTALL_LOG" | tail -n1 | tr -d '\r')"
+BACKGROUND_PULL_RESULT="$(sed -n 's/^BACKGROUND_PULL_RESULT=//p' "$LOCAL_LLM_INSTALL_LOG" | tail -n1 | tr -d '\r')"
 rm -f "$LOCAL_LLM_INSTALL_LOG"
 if [[ -z "$SELECTED_MODEL" ]]; then
   echo "Local LLM install did not report SELECTED_MODEL. Aborting to avoid inconsistent .env." >&2
@@ -294,6 +305,15 @@ case "$LOCAL_LLM_MODEL_INSTALL" in
 esac
 if [[ -n "$INSTALL_USER" ]] && [[ -n "$INSTALL_GROUP" ]]; then
   chown "$INSTALL_USER:$INSTALL_GROUP" "$ENV_FILE" || true
+fi
+if [[ "$LOCAL_LLM_PULL_MODE" == "background" ]]; then
+  echo "Local model download continues in background (pid: ${BACKGROUND_PULL_PID:-unknown})."
+  if [[ -n "$BACKGROUND_PULL_LOG" ]]; then
+    echo "Follow progress: tail -f \"$BACKGROUND_PULL_LOG\""
+  fi
+  if [[ -n "$BACKGROUND_PULL_RESULT" ]]; then
+    echo "Result file: $BACKGROUND_PULL_RESULT"
+  fi
 fi
 
 echo
