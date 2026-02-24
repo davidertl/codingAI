@@ -26,6 +26,7 @@ from core.observability import (
 )
 from core.sandbox_runner_client import should_use_sandbox_mode
 from core.projects_store import list_projects as list_projects_store
+from core.projects_store import migrate_from_state as migrate_projects_from_state
 from core.projects_store import set_project_push_gate_mode as set_project_push_gate_mode_store
 from core.projects_store import set_project_enabled as set_project_enabled_store
 from core.rules_store import delete_rules as delete_rules_store
@@ -991,16 +992,11 @@ def _project_default_push_gate_modes(repos: list[str]) -> dict[str, str]:
 
 
 def _project_rows(repos: list[str]):
-<<<<<<< ui-notes-local-llm
-    defaults = _project_default_push_gate_modes(repos)
-    return list_projects_store(repos, default_push_gate_by_repo=defaults)
-=======
     state = main.load_state()
     state_enabled_repos = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
     defaults = _project_default_push_gate_modes(repos)
     migrate_projects_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
     return list_projects_store(repos, state_enabled_repos=state_enabled_repos, default_push_gate_by_repo=defaults)
->>>>>>> localstate
 
 
 def _validate_project_repo(repo: str, repos: list[str]):

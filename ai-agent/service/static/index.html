@@ -883,7 +883,6 @@
     const SECTION_COLLAPSE_KEY = "codingai.ui.sidebar.sections";
     const SETTINGS_TAB_KEY = "codingai.ui.settings.tab";
     const TIMEZONE_KEY = "codingai.ui.timezone";
-    const LIVE_WS_RECONNECT_MS = 2200;
 
     async function fetchJson(path, opts = {}) {
       const res = await fetch(path, opts);
@@ -944,7 +943,6 @@
       showToast._t = setTimeout(() => el.toast.classList.remove("show"), 3000);
     }
 
-<<<<<<< ui-notes-local-llm
     function rememberProjectsError(message) {
       const text = String(message || "").trim();
       if (!text) {
@@ -1018,9 +1016,6 @@
       const sourcePart = src.endsWith("Z") ? "source: UTC" : "source: server";
       return { main, sub: `${datePart} • ${zonePart} • ${sourcePart}`, zone };
     }
-
-=======
->>>>>>> localstate
     function openNotesEditor() {
       const editor = document.getElementById("notesEditor");
       if (!editor) return;
@@ -1583,7 +1578,6 @@
     }
 
     async function refreshCore() {
-      const previousSelected = state.selectedRepo;
       const [health, repos] = await Promise.all([fetchJson("/health"), fetchJson("/repos")]);
       state.health = health;
       state.repos = repos;
@@ -1591,7 +1585,6 @@
         state.selectedRepo = repos.length ? repos[0].repo : null;
       }
       if (!state.selectedRepo && repos.length) state.selectedRepo = repos[0].repo;
-      if (previousSelected !== state.selectedRepo) sendLiveRepoSelection();
       renderHeader();
     }
 
@@ -1619,16 +1612,9 @@
 
     async function refreshSummary() {
       if (!state.selectedRepo) {
-<<<<<<< ui-notes-local-llm
         renderSummaryFromState();
         return;
       }
-=======
-        el.selectedRepoTitle.textContent = "repo: -";
-        return;
-      }
-      el.selectedRepoTitle.textContent = `repo: ${state.selectedRepo}`;
->>>>>>> localstate
       const summary = await fetchJson(`/repo/${encodeURIComponent(state.selectedRepo)}/summary`);
       state.summary = summary;
       renderSummaryFromState();
@@ -1705,7 +1691,6 @@
 
     if (el.btnCloseNotesEditor) {
       el.btnCloseNotesEditor.addEventListener("click", closeNotesEditor);
-<<<<<<< ui-notes-local-llm
     }
 
     if (el.serverTimeTzBtn) {
@@ -1726,8 +1711,6 @@
         renderHeader();
         showToast(`Timezone set: ${normalized.label}`);
       });
-=======
->>>>>>> localstate
     }
 
     document.addEventListener("input", (ev) => {
@@ -1863,7 +1846,6 @@
         const repoItem = itemByRepo(repo);
         if (action === "select") {
           state.selectedRepo = repo;
-          sendLiveRepoSelection();
           await refreshAll();
           return;
         }
@@ -1970,7 +1952,6 @@
       const savedTimezone = normalizeTimezoneInput(storage.get(TIMEZONE_KEY, "local"));
       state.timezone = savedTimezone.ok ? savedTimezone.value : "local";
       await refreshAll();
-      connectLiveSocket();
     }
 
     boot();

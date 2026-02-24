@@ -6,12 +6,8 @@
     "failure_cooldown_seconds": 21600,
     "publish_failure_comment": true,
     "publish_failure_subissue": false,
-<<<<<<< ui-notes-local-llm
-    "failure_subissue_threshold": 3
-=======
     "failure_subissue_threshold": 3,
     "publish_failure_issue": false
->>>>>>> localstate
   },
   "approval": {
     "required": false,
