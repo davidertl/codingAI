@@ -17,6 +17,7 @@ ai-agent/github_app/*.pem
 .codex/
 .config/
 .copilot/
+.claude/
 .docker/
 .dotnet/
 .local/

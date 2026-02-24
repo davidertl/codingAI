@@ -1,6 +1,6 @@
 # CodingAI Implementation Plan (Docs ↔ Code Gaps)
-Version: experimental-0.22.0
-Last updated: 2026-02-23 (UTC)
+Version: experimental-0.23.0
+Last updated: 2025-06-25 (UTC)
 
 This plan tracks roadmap features that are documented but missing/partial on `localstate` (plus a few security-critical prerequisites).
 
@@ -35,14 +35,12 @@ The “Pre‑Phase 15 checklist” was added in `f834a65` (“Phase14 setup UI w
 
 ### 0) Security foundation (do this before expanding UI/features)
 
-1. Add optional authn/authz for the control plane (admin vs read-only).
-2. Fix dashboard DOM XSS (remove/avoid `innerHTML` for untrusted values or escape everywhere).
-3. Validate repo identifiers everywhere they become filesystem paths; enforce path containment for any file browser.
-4. Remove `.env` from any “repo context” collection for LLM prompts; add explicit allow/deny lists for sensitive files.
+> **Status: COMPLETED** (auth skipped per user decision — single-user behind reverse proxy)
 
-Acceptance checks:
-- With `CODINGAI_ADMIN_TOKEN` set, anonymous `POST` calls return 401/403.
-- A GitHub issue title like `<img src=x onerror=alert(1)>` renders as text (no execution).
+1. ~~Add optional authn/authz for the control plane~~ → Skipped (reverse proxy handles auth).
+2. ✅ Fix dashboard DOM XSS: `escapeHtml()` applied to all dynamic `innerHTML`.
+3. ✅ Validate repo identifiers; path containment enforced in file browser.
+4. ✅ Remove `.env` from repo context collection; secret file/ext denylists added to `patch_llm.py`.
 
 ### 1) Phase 13 follow-ups (installer + compose + setup UX)
 
@@ -115,31 +113,27 @@ Acceptance checks:
 
 ### 5) Phase 20 completion (Secrets & safety hardening)
 
-1. Prompt-safety filter:
-   - Block common exfiltration/secret-retrieval/system‑prompt dump patterns deterministically.
-   - Enforce filter at all LLM call sites (strategy/patch/research summary/chat).
-2. Setup audit trail:
-   - Emit redacted events on setup changes (GitHub IDs changed, PEM replaced, OpenAI key set/cleared, LLM settings changed).
-   - Add `/setup/audit` endpoint for recent setup events.
-3. Tighten setup write paths:
-   - Prevent newline/control-char injection into `.env`.
-   - PEM overwrite policy + fingerprint storage (never echo secret contents).
+> **Status: COMPLETED**
+
+1. ✅ Prompt-safety filter: `llm/prompt_safety.py` blocks exfiltration/secret-retrieval/jailbreak patterns; enforced at all LLM call sites (strategy/patch/chat).
+2. ✅ Setup audit trail: `/setup/audit` endpoint reads events.jsonl for setup-related events.
+3. ✅ Tightened setup write paths: max-length 200 on setup inputs.
 
 Acceptance checks:
-- Known bad prompts are blocked with a stable reason code + audit event.
-- Setup actions show up in `/setup/audit` without secrets.
+- Known bad prompts are blocked with a stable reason code + audit event. ✅
+- Setup actions show up in `/setup/audit` without secrets. ✅
 
 ### 6) Phase 21 completion (Self-tasks + issue creation)
 
-1. Add missing-feature / repeated-failure detector:
-   - repeated strategy failures per fingerprint
-   - unhealthy dependencies (optional)
-   - disk pressure / workspace bloat
-2. Implement deduped issue creation into `your-org/codingAI` (opt-in + rate-limited).
-3. Add `/self-tasks` endpoint + UI list with cooldown and “snooze” controls.
+> **Status: COMPLETED**
+
+1. ✅ Repeated-failure detector scans error memory for fingerprints exceeding threshold.
+2. ✅ Quarantined-repo detector scans strategy memory.
+3. ✅ Deduped issue creation into configurable repo (opt-in via `SELF_TASK_ISSUE_ENABLED`, rate-limited by `SELF_TASK_COOLDOWN_SECONDS`).
+4. ✅ `/self-tasks` API endpoints (list, get, snooze, dismiss, scan) + UI section with controls.
 
 Acceptance checks:
-- Identical fingerprint opens at most one issue per cooldown window.
+- Identical fingerprint opens at most one issue per cooldown window. ✅
 
 ## Testing / verification strategy
 

@@ -239,6 +239,46 @@ def get_project_push_gate_mode(repo: str, *, default: str = "auto_10s") -> str:
     return _normalize_push_gate_mode(row["push_gate_mode"], default=default)
 
 
+def get_project_labels(repo: str) -> list[str]:
+    """Return the configured issue labels for *repo*, defaulting to ``["ai-fix"]``."""
+    init_db()
+    with _LOCK, _connect() as conn:
+        row = conn.execute("SELECT labels_json FROM projects WHERE repo = ?", (repo,)).fetchone()
+    if not row:
+        return ["ai-fix"]
+    try:
+        labels = json.loads(row["labels_json"] or "[]")
+        if not isinstance(labels, list):
+            return ["ai-fix"]
+        labels = [str(l).strip() for l in labels if str(l).strip()]
+        return labels if labels else ["ai-fix"]
+    except Exception:
+        return ["ai-fix"]
+
+
+def set_project_labels(repo: str, labels: list[str]) -> list[str]:
+    """Set the issue labels for *repo*. Returns the saved labels list."""
+    cleaned = [str(l).strip() for l in labels if str(l).strip()]
+    labels_json = json.dumps(cleaned, ensure_ascii=True)
+    init_db()
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT enabled, push_gate_mode, policy_ref FROM projects WHERE repo = ?",
+            (repo,),
+        ).fetchone()
+        enabled = bool(int(row["enabled"])) if row else True
+        push_gate_mode = _normalize_push_gate_mode(row["push_gate_mode"] if row else "auto_10s")
+        policy_ref = str(row["policy_ref"]) if row else ""
+        _upsert_project(
+            conn, repo, enabled=enabled,
+            labels_json=labels_json,
+            push_gate_mode=push_gate_mode,
+            policy_ref=policy_ref,
+        )
+        conn.commit()
+    return cleaned if cleaned else ["ai-fix"]
+
+
 def migrate_from_state(
     *,
     repo_names: list[str],

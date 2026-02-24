@@ -1,5 +1,5 @@
 # Strict Cleanup Notes
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 This cleanup removes transitional compatibility paths because there are no historical states to preserve.
 

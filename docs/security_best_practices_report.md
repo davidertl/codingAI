@@ -141,29 +141,21 @@ Highest-risk issues to address first:
 - Fix:
   - Disable or protect docs endpoints in production (or whenever auth is enabled).
 
-#### SBP-007 — Outbound GitHub API requests lack explicit timeouts
+#### SBP-007 — Outbound GitHub API requests lack explicit timeouts ✅ FIXED
 
-- Rule ID: general “`requests` MUST have timeouts”
-- Severity: Medium
+- Rule ID: general "`requests` MUST have timeouts"
+- Severity: Medium → Resolved
 - Location:
-  - `ai-agent/github/issue_manager.py:29` (`requests.get(...)` no timeout)
-  - `ai-agent/github/issue_manager.py:39` (`requests.post(...)` no timeout)
-  - `ai-agent/github/app_auth.py:47` (`requests.post(...)` no timeout)
-- Impact:
-  - Network stalls can hang worker cycles indefinitely (DoS/brittleness).
-- Fix:
-  - Add timeouts everywhere (e.g., `timeout=(3.05, 30)`) and centralize request helpers.
+  - All `github/*.py` modules now use `timeout=30` on every `requests.*()` call.
+- Status: Fixed. Every outbound HTTP call in `issue_manager.py`, `app_auth.py`, `git_api_commit.py`, `pr_manager.py`, `checks_manager.py`, and `ci_status.py` has `timeout=30`.
 
-#### SBP-008 — Container runs as root
+#### SBP-008 — Container runs as root ✅ FIXED
 
 - Rule ID: general container hardening best practice
-- Severity: Medium
+- Severity: Medium → Resolved
 - Location:
-  - `ai-agent/Dockerfile:1` (no `USER` directive)
-- Impact:
-  - Increases blast radius if compromised, especially with mounted secrets and writable workspaces.
-- Fix:
-  - Add a non-root user, chown relevant dirs, and run uvicorn as that user.
+  - `ai-agent/Dockerfile` — `USER app` directive added; non-root user created with `useradd`.
+- Status: Fixed. Container now runs as non-root `app` user.
 
 ## Notes / suggested next actions
 

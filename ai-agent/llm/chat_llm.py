@@ -6,13 +6,16 @@ import requests
 
 from llm.provider import (
     build_llm_request,
+    build_llm_stream_request,
     ensure_llm_ready,
     extract_output_text,
+    iter_llm_chunks,
     record_llm_request_result,
     resolve_model,
     try_failover,
 )
 from llm.rules_instructions import with_rules_instructions
+from llm.prompt_safety import check_prompt_safety
 
 _TASK_TYPES = {"review", "planning", "research", "chat"}
 
@@ -142,6 +145,24 @@ def chat_completion(*, repo: str, messages: list[dict], task_type: str | None = 
             "provider": ready.get("active_provider"),
         }
 
+    # Prompt safety gate
+    _safe, _reason = check_prompt_safety(input_text)
+    if not _safe:
+        try:
+            from core.observability import record_event
+            record_event("prompt_safety_block", repo=repo,
+                         data={"source": "chat_llm", "reason": _reason})
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "error": "prompt_safety_block",
+            "text": f"Prompt blocked by safety filter ({_reason}).",
+            "model": model,
+            "task_type": normalized_task_type,
+            "provider": ready.get("active_provider"),
+        }
+
     provider = None
     last_error = ""
     for attempt in range(CHAT_LLM_MAX_RETRIES + 1):
@@ -228,6 +249,89 @@ def chat_completion(*, repo: str, messages: list[dict], task_type: str | None = 
         "ok": False,
         "error": last_error or "chat_failed",
         "text": "",
+        "model": model,
+        "task_type": normalized_task_type,
+        "provider": provider,
+    }
+
+
+def chat_completion_stream(*, repo: str, messages: list[dict], task_type: str | None = None) -> dict:
+    """Streaming variant of ``chat_completion``.
+
+    On success returns ``{"ok": True, "response": <requests.Response>, "model": ..., "provider": ...}``.
+    The caller should iterate chunks via ``iter_llm_chunks(result["response"])``.
+    If the selected endpoint does not support streaming, falls back to the
+    non-streaming ``chat_completion`` (result will contain ``"text"`` instead of ``"response"``).
+    On error returns ``{"ok": False, "error": ..., ...}`` (same shape as ``chat_completion``).
+    """
+    ready = ensure_llm_ready(force=False)
+    route = route_for_task(task_type)
+    normalized_task_type = route["task_type"]
+    model = route["model"]
+    instructions = with_rules_instructions(route["instructions"], repo=repo)
+
+    _base_err = {
+        "model": model,
+        "task_type": normalized_task_type,
+    }
+
+    if not ready.get("ready"):
+        return {**_base_err, "ok": False, "error": "llm_not_ready", "text": "",
+                "provider": ready.get("active_provider")}
+
+    input_text = _messages_to_prompt(repo, messages, max_chars=max(2000, CHAT_MAX_INPUT_CHARS))
+    if not input_text:
+        return {**_base_err, "ok": False, "error": "empty_prompt", "text": "",
+                "provider": ready.get("active_provider")}
+
+    _safe, _reason = check_prompt_safety(input_text)
+    if not _safe:
+        try:
+            from core.observability import record_event
+            record_event("prompt_safety_block", repo=repo,
+                         data={"source": "chat_llm_stream", "reason": _reason})
+        except Exception:
+            pass
+        return {**_base_err, "ok": False, "error": "prompt_safety_block",
+                "text": f"Prompt blocked by safety filter ({_reason}).",
+                "provider": ready.get("active_provider")}
+
+    provider, url, headers, payload = build_llm_stream_request(
+        model=model, instructions=instructions, input_text=input_text,
+        max_output_tokens=max(64, CHAT_MAX_OUTPUT_TOKENS),
+    )
+
+    if not payload.get("stream"):
+        # Endpoint does not support streaming (e.g. /responses) — fall back
+        return chat_completion(repo=repo, messages=messages, task_type=task_type)
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=120, stream=True)
+    except requests.RequestException as exc:
+        last_error = str(exc)[:320]
+        record_llm_request_result(provider=provider, operation="chat_stream", ok=False, error=last_error)
+        # Try failover to non-streaming
+        failover = try_failover(provider, reason=last_error)
+        if failover:
+            return chat_completion(repo=repo, messages=messages, task_type=task_type)
+        return {**_base_err, "ok": False, "error": last_error, "text": "", "provider": provider}
+
+    if response.status_code >= 400:
+        body = (response.text or "")[:220]
+        last_error = f"http_{response.status_code}:{body}"
+        record_llm_request_result(
+            provider=provider, operation="chat_stream", ok=False,
+            status_code=response.status_code, error=last_error,
+        )
+        failover = try_failover(provider, reason=last_error)
+        if failover:
+            return chat_completion(repo=repo, messages=messages, task_type=task_type)
+        return {**_base_err, "ok": False, "error": last_error, "text": "", "provider": provider}
+
+    return {
+        "ok": True,
+        "error": "",
+        "response": response,
         "model": model,
         "task_type": normalized_task_type,
         "provider": provider,

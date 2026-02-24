@@ -17,7 +17,7 @@ def get_pull_request(repo, pr_number):
     owner = get_github_owner()
     r = requests.get(
         f"{API_BASE}/repos/{owner}/{repo}/pulls/{int(pr_number)}",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
     )
     r.raise_for_status()
     return r.json()
@@ -33,7 +33,7 @@ def get_pr_ci_status(repo, pr_number):
 
     status_r = requests.get(
         f"{API_BASE}/repos/{owner}/{repo}/commits/{head_sha}/status",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
     )
     status_r.raise_for_status()
     status_json = status_r.json()
@@ -41,7 +41,7 @@ def get_pr_ci_status(repo, pr_number):
 
     checks_r = requests.get(
         f"{API_BASE}/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         params={"per_page": 100},
     )
     checks_r.raise_for_status()

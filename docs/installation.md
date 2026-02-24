@@ -1,5 +1,5 @@
 # Installation (Fresh Debian CLI)
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 This is a minimal, interactive install path for a brand new Debian server (no GUI).
 

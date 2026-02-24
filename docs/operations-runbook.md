@@ -1,5 +1,5 @@
 # Operations Runbook
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 ## Prerequisites
 
@@ -110,6 +110,7 @@ CODINGAI_HTTP_PORT=8000 docker compose up --build
 ```
 
 Volumes (host): `.env`, `github_app/`, `logs/`, `state.json`, `workspaces/`.
+Docker named volume `codingai-db` stores `state.db` (SQLite) at `/app/ai-agent/db/state.db` inside the container.
 
 ## Common env toggles
 

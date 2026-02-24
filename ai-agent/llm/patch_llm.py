@@ -19,6 +19,7 @@ from llm.provider import (
     try_failover,
 )
 from llm.rules_instructions import with_rules_instructions
+from llm.prompt_safety import check_prompt_safety
 
 from paths import ENV_FILE
 
@@ -51,7 +52,6 @@ _TEXT_EXTS = {
     ".md",
     ".txt",
     ".sh",
-    ".env",
     ".cs",
     ".csproj",
     ".sln",
@@ -62,6 +62,29 @@ _TEXT_EXTS = {
     ".ini",
     ".xml",
     ".dockerignore",
+}
+_SECRET_FILE_DENYLIST = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.test",
+    ".env.development",
+    ".npmrc",
+    ".netrc",
+    ".pgpass",
+    ".htpasswd",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+}
+_SECRET_EXT_DENYLIST = {
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
 }
 _PRIORITY_NAMES = {
     "README.md",
@@ -85,9 +108,16 @@ def _extract_json(text: str) -> dict:
 
 
 def _should_include_file(name: str) -> bool:
-    if name in _PRIORITY_NAMES:
+    base = os.path.basename(name)
+    if base in _SECRET_FILE_DENYLIST:
+        return False
+    _, ext = os.path.splitext(base)
+    if ext.lower() in _SECRET_EXT_DENYLIST:
+        return False
+    if base.startswith(".env"):
+        return False
+    if base in _PRIORITY_NAMES:
         return True
-    _, ext = os.path.splitext(name)
     return ext.lower() in _TEXT_EXTS
 
 
@@ -339,6 +369,23 @@ def propose_patch_ops(
     issue_number = issue.get("number")
     issue_title = str(issue.get("title", ""))
     issue_body = str(issue.get("body", ""))
+
+    # Prompt safety gate — check user-supplied issue text
+    for _label, _text in [("issue_title", issue_title), ("issue_body", issue_body)]:
+        _safe, _reason = check_prompt_safety(_text)
+        if not _safe:
+            try:
+                from core.observability import record_event
+                record_event("prompt_safety_block", repo=repo_name,
+                             issue_number=issue_number,
+                             data={"source": "patch_llm", "field": _label, "reason": _reason})
+            except Exception:
+                pass
+            return {
+                "patch_ops": [],
+                "reason": f"Prompt blocked by safety filter ({_reason}).",
+                "confidence": 0.0,
+            }
 
     context = _collect_repo_context(repo_path)
 

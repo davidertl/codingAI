@@ -1,24 +1,24 @@
 # CodingAI Roadmap (Phases 21 → 1, Local-Only VM)
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 ## Phase 21 – Autonomous Mode & Self-Tasks
 - Per-project “full automation” toggle (default off) honoring push gate.
 - Agent can open GitHub issues in `your-org/codingAI` for missing features/bugs.
 - Scheduled self-checks: dependency drift, disk space, workspace cleanup.
 
-Status: Partially implemented (automation toggle + auto-start workers + self-check disk/cleanup; issue creation for missing features not yet wired, tracked in `docs/implementation-plan.md`).
+Status: Implemented (automation toggle + auto-start workers + self-check disk/cleanup + self-task scanner with repeated-failure/quarantine detection + deduped GitHub issue creation with cooldown + `/self-tasks` API + UI with snooze/dismiss controls).
 
 ## Phase 20 – Secrets & Safety (Local)
 - PEM/API key upload rules: size/type validation, overwrite policy, fingerprint stored, audit entry; never echo secret content.
 - Redaction for logs/metrics; lightweight prompt-safety filter even in local mode.
 
-Status: Partially implemented (events API redaction, PEM validation + overwrite policy + fingerprint + audit event; prompt-safety filter remains open, tracked in `docs/implementation-plan.md`).
+Status: Implemented (events API redaction, PEM validation + overwrite policy + fingerprint + audit event; prompt-safety filter with regex-based jailbreak/exfil detection integrated into all LLM modules; secret file denylist in patch generation; XSS hardening in dashboard).
 
 ## Phase 19 – Memory & Reuse
 - Strategy memory/quarantine persisted (to move to SQLite); error fingerprints map to successful strategy chains.
 - UI surfaces “similar failures”; strategies auto-biased by history.
 
-Status: Implemented (error fingerprint → preferred strategy memory used before LLM; persisted in state).
+Status: Implemented (error fingerprint → preferred strategy memory used before LLM; persisted in SQLite `strategy_memory`/`error_memory` tables with state.json backwards compat; `/strategy-memory` API; UI visualization with similar-failure surfacing).
 ## Phase 18 – Research (Local-First)
 - SearxNG service; research cache (query/results/summary TTL).
 - Summaries via local LLM; optional API fallback toggle.
@@ -43,7 +43,7 @@ Status: Implemented (pipeline stages persisted, pause/pause controls via `/pipel
 - Chats/messages in DB; repo-scoped threads; SSE streaming.
 - File tree browse (read-only) and attach snippets.
 - Model routing per task type; UI toggles “use API for review/planning/research”; local LLM default.
-
+Status: Implemented (chat threads/messages in SQLite; true SSE streaming from LLM via `chat/completions` with fallback replay; file tree browse + snippet attach; model routing per task type `chat`/`review`/`planning`/`research`; chat UI with thread sidebar/composer/streaming display).
 ## Phase 14 – Projects (Repo Discovery)
 - List GitHub App installation repos; enable/disable per repo.
 - Persist projects: push gate mode (10s auto vs manual approve), labels to watch, policy reference.

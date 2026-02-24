@@ -17,6 +17,7 @@ from llm.provider import (
     try_failover,
 )
 from llm.rules_instructions import with_rules_instructions
+from llm.prompt_safety import check_prompt_safety
 
 from paths import ENV_FILE
 
@@ -220,6 +221,22 @@ def pick_next_strategy(
         "}\n"
     )
     instructions = with_rules_instructions(instructions, repo=repo_name, require_json_only=True)
+
+    # Prompt safety gate — check externally-sourced error text
+    _safe, _reason = check_prompt_safety(last_error)
+    if not _safe:
+        try:
+            from core.observability import record_event
+            record_event("prompt_safety_block", repo=repo_name,
+                         data={"source": "strategy_llm", "reason": _reason})
+        except Exception:
+            pass
+        return {
+            "next_strategy_id": remaining[0]["id"] if remaining else None,
+            "reason": f"Prompt blocked by safety filter ({_reason}); fallback to first remaining.",
+            "confidence": 0.0,
+            "retry_count": 0,
+        }
 
     user = {
         "repo_name": repo_name,

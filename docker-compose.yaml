@@ -18,13 +18,24 @@ services:
       - LLM_REQUIRE_HEALTHY=${LLM_REQUIRE_HEALTHY:-true}
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434}
       - OBS_EVENT_LOG_ENABLED=${OBS_EVENT_LOG_ENABLED:-true}
+      - ORCHESTRATOR_V2_ENABLED=${ORCHESTRATOR_V2_ENABLED:-true}
+      - PROMPT_SAFETY_ENABLED=${PROMPT_SAFETY_ENABLED:-true}
+      - SEARX_URL=${SEARX_URL:-http://searxng:8080}
+      - CODINGAI_DB_FILE=${CODINGAI_DB_FILE:-/app/ai-agent/db/state.db}
+      - DRY_RUN=${DRY_RUN:-false}
+      - SELF_TASK_ENABLED=${SELF_TASK_ENABLED:-true}
+      - SELF_TASK_ISSUE_ENABLED=${SELF_TASK_ISSUE_ENABLED:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-}
+      - LOCAL_LLM_API_MODE=${LOCAL_LLM_API_MODE:-chat}
     volumes:
       - ./ai-agent/.env:/app/ai-agent/.env
       - ./ai-agent/.agent:/app/ai-agent/.agent
       - ./ai-agent/github_app:/app/ai-agent/github_app
       - ./ai-agent/logs:/app/ai-agent/logs
       - ./ai-agent/state.json:/app/ai-agent/state.json
-      - ./ai-agent/state.db:/app/ai-agent/state.db
+      - codingai-db:/app/ai-agent/db
       - ./workspaces:/app/workspaces
     restart: unless-stopped
 
@@ -38,5 +49,19 @@ services:
       - ollama-data:/root/.ollama
     restart: unless-stopped
 
+  searxng:
+    image: searxng/searxng:latest
+    container_name: codingai-searxng
+    profiles: ["search"]
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8080}/
+    volumes:
+      - searxng-data:/etc/searxng
+    restart: unless-stopped
+
 volumes:
   ollama-data:
+  codingai-db:
+  searxng-data:

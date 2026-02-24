@@ -12,7 +12,7 @@ def _headers():
 
 def get_default_branch(repo):
     owner = get_github_owner()
-    r = requests.get(f"{API_BASE}/repos/{owner}/{repo}", headers=_headers())
+    r = requests.get(f"{API_BASE}/repos/{owner}/{repo}", headers=_headers(), timeout=30)
     r.raise_for_status()
     return r.json()["default_branch"]
 
@@ -24,13 +24,13 @@ def get_branch_sha(repo, branch):
         return None
     r = requests.get(
         f"{API_BASE}/repos/{owner}/{repo}/git/ref/heads/{branch_name}",
-        headers=_headers()
+        headers=_headers(), timeout=30
     )
     if r.status_code in {404, 409}:
         # Fallback for branch names that may not resolve reliably via singular ref path.
         m = requests.get(
             f"{API_BASE}/repos/{owner}/{repo}/git/matching-refs/heads/{branch_name}",
-            headers=_headers()
+            headers=_headers(), timeout=30
         )
         if m.status_code in {404, 409}:
             return None
@@ -56,7 +56,7 @@ def get_commit(repo, commit_sha):
     owner = get_github_owner()
     r = requests.get(
         f"{API_BASE}/repos/{owner}/{repo}/git/commits/{commit_sha}",
-        headers=_headers()
+        headers=_headers(), timeout=30
     )
     r.raise_for_status()
     return r.json()
@@ -66,7 +66,7 @@ def create_blob(repo, content):
     owner = get_github_owner()
     r = requests.post(
         f"{API_BASE}/repos/{owner}/{repo}/git/blobs",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         json={
             "content": content,
             "encoding": "utf-8"
@@ -80,7 +80,7 @@ def create_tree(repo, base_tree_sha, file_path, blob_sha):
     owner = get_github_owner()
     r = requests.post(
         f"{API_BASE}/repos/{owner}/{repo}/git/trees",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         json={
             "base_tree": base_tree_sha,
             "tree": [
@@ -105,7 +105,7 @@ def create_tree_multi(repo, base_tree_sha, tree_entries):
     owner = get_github_owner()
     r = requests.post(
         f"{API_BASE}/repos/{owner}/{repo}/git/trees",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         json=payload
     )
     r.raise_for_status()
@@ -147,7 +147,7 @@ def create_commit(repo, message, tree_sha, parent_sha):
     owner = get_github_owner()
     r = requests.post(
         f"{API_BASE}/repos/{owner}/{repo}/git/commits",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         json={
             "message": message,
             "tree": tree_sha,
@@ -162,7 +162,7 @@ def create_branch(repo, branch, base_sha):
     owner = get_github_owner()
     r = requests.post(
         f"{API_BASE}/repos/{owner}/{repo}/git/refs",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         json={
             "ref": f"refs/heads/{branch}",
             "sha": base_sha
@@ -192,7 +192,7 @@ def update_branch(repo, branch, commit_sha):
     owner = get_github_owner()
     r = requests.patch(
         f"{API_BASE}/repos/{owner}/{repo}/git/refs/heads/{branch}",
-        headers=_headers(),
+        headers=_headers(), timeout=30,
         json={
             "sha": commit_sha
         }

@@ -639,3 +639,48 @@ def extract_output_text(data: dict) -> str:
             return "\n".join(parts)
 
     return ""
+
+
+def build_llm_stream_request(*, model: str, instructions: str, input_text: str, max_output_tokens: int):
+    """Same as ``build_llm_request`` but adds ``stream: true`` to the payload.
+
+    Returns ``(provider, url, headers, payload)`` with streaming enabled.
+    Only the ``chat/completions`` endpoint (Ollama / OpenAI-compatible) is
+    supported for streaming; the ``/responses`` endpoint silently falls back
+    to non-streaming.
+    """
+    provider, url, headers, payload = build_llm_request(
+        model=model,
+        instructions=instructions,
+        input_text=input_text,
+        max_output_tokens=max_output_tokens,
+    )
+    # Only chat/completions supports standard SSE streaming
+    if "/chat/completions" in url:
+        payload["stream"] = True
+    return provider, url, headers, payload
+
+
+def iter_llm_chunks(response):
+    """Iterate SSE chunks from a ``requests.Response`` obtained with ``stream=True``.
+
+    Yields ``str`` text deltas.  Handles both OpenAI and Ollama SSE formats:
+    ``data: {"choices":[{"delta":{"content":"..."}}]}``
+    """
+    import json as _json
+    for line in response.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data:"):
+            continue
+        payload_str = line[len("data:"):].strip()
+        if payload_str == "[DONE]":
+            return
+        try:
+            data = _json.loads(payload_str)
+        except (ValueError, _json.JSONDecodeError):
+            continue
+        choices = data.get("choices") or []
+        for choice in choices:
+            delta = choice.get("delta", {})
+            content = delta.get("content")
+            if content:
+                yield content

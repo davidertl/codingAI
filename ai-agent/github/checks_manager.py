@@ -53,6 +53,7 @@ def create_completed_check_run(
         f"https://api.github.com/repos/{owner}/{repo}/check-runs",
         headers=_headers(),
         json=payload,
+        timeout=30,
     )
     r.raise_for_status()
     return r.json()

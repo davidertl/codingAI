@@ -69,7 +69,7 @@ def get_installation_token():
 
     url = f"https://api.github.com/app/installations/{int(installation_id)}/access_tokens"
 
-    r = requests.post(url, headers=headers)
+    r = requests.post(url, headers=headers, timeout=30)
 
     if r.status_code != 201:
         raise Exception(f"Token creation failed: {r.text}")

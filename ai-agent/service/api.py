@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.observability import (
+    EVENT_LOG_FILE,
     get_metrics_snapshot,
     inc_counter,
     read_recent_events,
@@ -29,6 +30,13 @@ from core.projects_store import list_projects as list_projects_store
 from core.projects_store import migrate_from_state as migrate_projects_from_state
 from core.projects_store import set_project_push_gate_mode as set_project_push_gate_mode_store
 from core.projects_store import set_project_enabled as set_project_enabled_store
+from core.projects_store import set_project_labels as set_project_labels_store
+from core.memory_store import (
+    init_memory_tables,
+    migrate_from_state as migrate_memory_from_state,
+    list_strategy_memories,
+    get_strategy_memory,
+)
 from core.rules_store import delete_rules as delete_rules_store
 from core.rules_store import effective_rules as effective_rules_store
 from core.rules_store import read_rules as read_rules_store
@@ -56,9 +64,9 @@ import main
 from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
 from github.repo_manager import ensure_repo_mirror
-from llm.provider import ensure_llm_ready, get_llm_runtime_status, get_local_model_status
+from llm.provider import ensure_llm_ready, get_llm_runtime_status, get_local_model_status, iter_llm_chunks, record_llm_request_result
 import llm.provider as llm_provider_runtime
-from llm.chat_llm import chat_completion, route_for_task
+from llm.chat_llm import chat_completion, chat_completion_stream, route_for_task
 from paths import ENV_FILE, GITHUB_APP_PEM_FILE, setup_status
 from github.app_auth import get_installation_token
 from github.repo_manager import list_installation_repos
@@ -243,7 +251,7 @@ class WorkerManager:
 
 
 manager = WorkerManager()
-app = FastAPI(title="CodingAI Control Plane", version="experimental-0.22.0")
+app = FastAPI(title="CodingAI Control Plane", version="experimental-0.23.0")
 app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
@@ -770,9 +778,9 @@ def setup_github(
     app_id: str = Form(...),
     installation_id: str = Form(...),
 ):
-    owner = owner.strip()
-    app_id = app_id.strip()
-    installation_id = installation_id.strip()
+    owner = owner.strip()[:200]
+    app_id = app_id.strip()[:200]
+    installation_id = installation_id.strip()[:200]
     if not (owner and app_id and installation_id):
         raise HTTPException(status_code=400, detail="owner, app_id, installation_id are required")
     updates = {
@@ -960,6 +968,48 @@ async def setup_pem(pem: UploadFile = File(...)):
     return {"status": "ok", "fingerprint": fingerprint, "setup": setup_status()}
 
 
+_SETUP_AUDIT_EVENT_PREFIXES = (
+    "setup_github_",
+    "setup_llm_",
+    "setup_pem_",
+    "setup_github_cleared",
+    "rules_updated",
+    "rules_deleted",
+    "prompt_safety_block",
+    "project_add",
+    "project_remove",
+    "project_update",
+)
+
+
+@app.get("/setup/audit")
+def setup_audit(limit: int = 200):
+    """Return the most recent setup-related audit events from the event log."""
+    limit = max(1, min(limit, 2000))
+    events: list[dict] = []
+    log_path = EVENT_LOG_FILE
+    if not os.path.isfile(log_path):
+        return {"events": [], "total": 0}
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                ev = entry.get("event", "")
+                if any(ev.startswith(p) for p in _SETUP_AUDIT_EVENT_PREFIXES) or ev in _SETUP_AUDIT_EVENT_PREFIXES:
+                    events.append(entry)
+    except OSError:
+        return {"events": [], "total": 0, "error": "unable to read event log"}
+    # Return most recent entries (tail)
+    tail = events[-limit:] if len(events) > limit else events
+    return {"events": list(reversed(tail)), "total": len(events)}
+
+
 def _project_repo_candidates():
     source = "installation"
     error = None
@@ -996,6 +1046,9 @@ def _project_rows(repos: list[str]):
     state_enabled_repos = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
     defaults = _project_default_push_gate_modes(repos)
     migrate_projects_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
+    # Migrate strategy memory from state.json → SQLite (idempotent)
+    init_memory_tables()
+    migrate_memory_from_state(state)
     return list_projects_store(repos, state_enabled_repos=state_enabled_repos, default_push_gate_by_repo=defaults)
 
 
@@ -1067,6 +1120,44 @@ def set_project_push_gate(repo: str, mode: str):
     )
     return {"repo": repo, "push_gate_mode": normalized}
 
+
+class ProjectLabelsPayload(BaseModel):
+    labels: list[str] = Field(default_factory=lambda: ["ai-fix"])
+
+
+@app.put("/projects/{repo}/labels")
+def set_project_labels(repo: str, payload: ProjectLabelsPayload):
+    repos, _source, _error = _project_repo_candidates()
+    _validate_project_repo(repo, repos)
+    labels = [str(l).strip() for l in payload.labels if str(l).strip()]
+    if not labels:
+        labels = ["ai-fix"]
+    saved = set_project_labels_store(repo, labels)
+    record_event(
+        "project_labels_updated", repo=repo, status="ok",
+        data={"labels": saved},
+    )
+    return {"repo": repo, "labels": saved}
+
+
+# ── Strategy Memory endpoints ──────────────────────────────────────
+
+@app.get("/strategy-memory")
+def strategy_memory_list():
+    """Return all strategy memory rows for diagnostics / UI."""
+    return {"time_utc": _utc_now_iso(), "memories": list_strategy_memories()}
+
+
+@app.get("/strategy-memory/{repo:path}")
+def strategy_memory_get(repo: str):
+    """Return strategy memory for a single repo."""
+    repo = repo.strip()
+    if not repo:
+        raise HTTPException(status_code=400, detail="repo is required")
+    return {"time_utc": _utc_now_iso(), "repo": repo, "memory": get_strategy_memory(repo)}
+
+
+# ── Rules helpers ──────────────────────────────────────────────────
 
 def _rules_event_data(*, scope: str, rules_markdown: str, repo: str | None = None) -> dict:
     body = str(rules_markdown or "")
@@ -1420,9 +1511,11 @@ def chat_thread_send_message(thread_id: int, payload: MessageCreatePayload):
 
 @app.get("/chat/messages/{message_id}/stream")
 async def chat_stream_message(request: Request, message_id: int, last_event_id: int | None = Query(default=None)):
-    message = _generate_assistant_for_message(int(message_id))
-    if not message:
+    assistant = get_chat_message(int(message_id))
+    if not assistant:
         raise HTTPException(status_code=404, detail=f"Unknown message id {message_id}")
+    if str(assistant.get("role")) != "assistant":
+        raise HTTPException(status_code=400, detail="stream is only supported for assistant messages")
 
     header_last_id = request.headers.get("last-event-id")
     resume_from = int(last_event_id or 0)
@@ -1432,39 +1525,169 @@ async def chat_stream_message(request: Request, message_id: int, last_event_id: 
         except Exception:
             resume_from = 0
 
-    chunks = _stream_chunks(str(message.get("content", "")), chunk_chars=CHAT_STREAM_CHUNK_CHARS)
-    done_event_id = len(chunks) + 1
-
-    async def _event_stream():
-        start_from = max(1, resume_from + 1)
-        for idx, chunk in enumerate(chunks, start=1):
-            if idx < start_from:
-                continue
-            payload = {
-                "message_id": int(message_id),
-                "chunk_index": idx,
-                "chunk_total": len(chunks),
-                "delta": chunk,
-                "done": False,
-            }
-            yield f"id: {idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
-            if await request.is_disconnected():
-                return
-            await asyncio.sleep(0.012)
-        if done_event_id >= start_from:
-            done_payload = {
-                "message_id": int(message_id),
-                "done": True,
-                "status": str(message.get("status", "")),
-            }
-            yield f"id: {done_event_id}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
-
-    headers = {
+    _sse_headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
-    return StreamingResponse(_event_stream(), media_type="text/event-stream", headers=headers)
+
+    # ---- Already-completed message: replay stored content as fake chunks ----
+    if str(assistant.get("status")) == "completed" and str(assistant.get("content", "")).strip():
+        chunks = _stream_chunks(str(assistant.get("content", "")), chunk_chars=CHAT_STREAM_CHUNK_CHARS)
+        done_event_id = len(chunks) + 1
+
+        async def _replay_stream():
+            start_from = max(1, resume_from + 1)
+            for idx, chunk in enumerate(chunks, start=1):
+                if idx < start_from:
+                    continue
+                payload = {
+                    "message_id": int(message_id),
+                    "chunk_index": idx,
+                    "chunk_total": len(chunks),
+                    "delta": chunk,
+                    "done": False,
+                }
+                yield f"id: {idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
+                if await request.is_disconnected():
+                    return
+                await asyncio.sleep(0.012)
+            if done_event_id >= start_from:
+                done_payload = {
+                    "message_id": int(message_id),
+                    "done": True,
+                    "status": "completed",
+                }
+                yield f"id: {done_event_id}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
+
+        return StreamingResponse(_replay_stream(), media_type="text/event-stream", headers=_sse_headers)
+
+    # ---- Pending message: attempt true LLM streaming ----
+    thread = _chat_thread_or_404(int(assistant["thread_id"]))
+    meta = dict(assistant.get("meta") or {})
+    route_task = _normalize_chat_task_type(
+        meta.get("route_task_type") or assistant.get("task_type") or thread.get("task_type"),
+    )
+    prompt_messages = _thread_messages_for_prompt(
+        int(thread["id"]), include_until_message_id=int(assistant["id"]) - 1,
+    )
+
+    stream_result = chat_completion_stream(
+        repo=str(thread["repo"]), messages=prompt_messages, task_type=route_task,
+    )
+
+    # -- Streaming init failed → emit single done-with-error event ----
+    if not stream_result.get("ok"):
+        err = str(stream_result.get("error") or "chat_failed")
+        err_text = str(stream_result.get("text") or f"Assistant generation failed: {err}")
+        update_chat_message(
+            int(message_id),
+            content=err_text,
+            status="failed",
+            model=str(stream_result.get("model") or ""),
+            meta={**meta, "provider": stream_result.get("provider"), "error": err,
+                  "generated_at": int(time.time())},
+        )
+        error_payload = {"message_id": int(message_id), "done": True, "status": "failed", "error": err}
+
+        async def _error_stream():
+            yield f"id: 1\nevent: done\ndata: {json.dumps(error_payload, ensure_ascii=True)}\n\n"
+
+        return StreamingResponse(_error_stream(), media_type="text/event-stream", headers=_sse_headers)
+
+    # -- Non-streaming fallback (endpoint doesn't support stream) → save & replay --
+    if "text" in stream_result and "response" not in stream_result:
+        text = str(stream_result.get("text") or "")
+        update_chat_message(
+            int(message_id),
+            content=text,
+            status="completed",
+            model=str(stream_result.get("model") or ""),
+            meta={**meta, "provider": stream_result.get("provider"),
+                  "model": stream_result.get("model"),
+                  "generated_at": int(time.time())},
+        )
+        fb_chunks = _stream_chunks(text, chunk_chars=CHAT_STREAM_CHUNK_CHARS)
+        fb_done_id = len(fb_chunks) + 1
+
+        async def _fallback_stream():
+            for idx, chunk in enumerate(fb_chunks, start=1):
+                payload = {
+                    "message_id": int(message_id),
+                    "chunk_index": idx,
+                    "chunk_total": len(fb_chunks),
+                    "delta": chunk,
+                    "done": False,
+                }
+                yield f"id: {idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
+                if await request.is_disconnected():
+                    return
+                await asyncio.sleep(0.012)
+            done_payload = {"message_id": int(message_id), "done": True, "status": "completed"}
+            yield f"id: {fb_done_id}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
+
+        return StreamingResponse(_fallback_stream(), media_type="text/event-stream", headers=_sse_headers)
+
+    # ---- True LLM streaming ----
+    llm_response = stream_result["response"]
+    llm_model = str(stream_result.get("model") or "")
+    llm_provider = stream_result.get("provider")
+
+    async def _live_stream():
+        loop = asyncio.get_event_loop()
+        accumulated: list[str] = []
+        chunk_idx = 0
+        gen = iter_llm_chunks(llm_response)
+        sentinel = object()
+
+        while True:
+            if await request.is_disconnected():
+                break
+            # Run blocking next() in thread pool so we don't block the event loop
+            delta = await loop.run_in_executor(None, next, gen, sentinel)
+            if delta is sentinel:
+                break
+            chunk_idx += 1
+            accumulated.append(delta)
+            payload = {
+                "message_id": int(message_id),
+                "chunk_index": chunk_idx,
+                "delta": delta,
+                "done": False,
+            }
+            yield f"id: {chunk_idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
+
+        full_text = "".join(accumulated).strip()
+        if full_text:
+            update_chat_message(
+                int(message_id),
+                content=full_text,
+                status="completed",
+                model=llm_model,
+                meta={**meta, "provider": llm_provider, "model": llm_model,
+                      "generated_at": int(time.time()), "streamed": True},
+            )
+            record_llm_request_result(
+                provider=llm_provider or "", operation="chat_stream", ok=True,
+            )
+            done_payload = {"message_id": int(message_id), "done": True, "status": "completed"}
+        else:
+            update_chat_message(
+                int(message_id),
+                content="Assistant generation failed: empty response stream",
+                status="failed",
+                model=llm_model,
+                meta={**meta, "provider": llm_provider, "error": "empty_stream",
+                      "generated_at": int(time.time())},
+            )
+            record_llm_request_result(
+                provider=llm_provider or "", operation="chat_stream", ok=False, error="empty_stream",
+            )
+            done_payload = {"message_id": int(message_id), "done": True, "status": "failed", "error": "empty_stream"}
+
+        yield f"id: {chunk_idx + 1}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
+
+    return StreamingResponse(_live_stream(), media_type="text/event-stream", headers=_sse_headers)
 
 
 @app.get("/chat/files/{repo}/tree")
@@ -1962,7 +2185,130 @@ def _live_snapshot(selected_repo: str | None = None) -> dict:
         "setup_values": setup_values_payload,
         "summary": summary_payload,
         "rules": _live_rules_snapshot(resolved_repo),
+        "orchestration_runs": list_orchestrator_runs(repo=resolved_repo, limit=20),
     }
+
+
+async def _ws_handle_chat_send(websocket: WebSocket, payload: dict):
+    """Handle a chat_send message over the live WebSocket — streams LLM response back."""
+    thread_id = payload.get("thread_id")
+    content = str(payload.get("content") or "").strip()
+    task_type_raw = str(payload.get("task_type") or "chat").strip()
+    nonce = payload.get("nonce", "")  # client-provided correlation id
+
+    if not thread_id or not content:
+        await websocket.send_json({
+            "type": "chat_error", "nonce": nonce,
+            "error": "thread_id and content are required",
+            "time_utc": _utc_now_iso(),
+        })
+        return
+
+    try:
+        thread = get_chat_thread(int(thread_id))
+        if not thread:
+            raise ValueError(f"Unknown thread {thread_id}")
+
+        route = route_for_task(task_type_raw or thread.get("task_type"))
+        route_task_type = str(route.get("task_type", "chat"))
+
+        user_message = create_chat_message(
+            thread_id=int(thread_id), role="user", content=content,
+            status="completed", task_type=route_task_type, model="", meta={"source": "ws"},
+        )
+        assistant_message = create_chat_message(
+            thread_id=int(thread_id), role="assistant", content="", status="pending",
+            task_type=route_task_type, model=str(route.get("model") or ""),
+            meta={"route_task_type": route_task_type, "route_model": str(route.get("model") or ""),
+                  "queued_at": int(time.time())},
+        )
+        assistant_id = int(assistant_message["id"])
+        await websocket.send_json({
+            "type": "chat_ack", "nonce": nonce, "thread_id": int(thread_id),
+            "user_message": user_message, "assistant_message_id": assistant_id,
+            "time_utc": _utc_now_iso(),
+        })
+
+        prompt_messages = _thread_messages_for_prompt(int(thread_id), include_until_message_id=assistant_id - 1)
+        meta = dict(assistant_message.get("meta") or {})
+
+        stream_result = chat_completion_stream(
+            repo=str(thread.get("repo") or ""), messages=prompt_messages, task_type=route_task_type,
+        )
+
+        if not stream_result.get("ok"):
+            err = str(stream_result.get("error") or "chat_failed")
+            err_text = str(stream_result.get("text") or f"Assistant generation failed: {err}")
+            update_chat_message(assistant_id, content=err_text, status="failed",
+                                model=str(stream_result.get("model") or ""),
+                                meta={**meta, "provider": stream_result.get("provider"), "error": err,
+                                      "generated_at": int(time.time())})
+            await websocket.send_json({
+                "type": "chat_done", "nonce": nonce, "message_id": assistant_id,
+                "status": "failed", "error": err, "time_utc": _utc_now_iso(),
+            })
+            return
+
+        # Non-streaming fallback
+        if "text" in stream_result and "response" not in stream_result:
+            text = str(stream_result.get("text") or "")
+            update_chat_message(assistant_id, content=text, status="completed",
+                                model=str(stream_result.get("model") or ""),
+                                meta={**meta, "provider": stream_result.get("provider"),
+                                      "model": stream_result.get("model"), "generated_at": int(time.time())})
+            await websocket.send_json({
+                "type": "chat_chunk", "nonce": nonce, "message_id": assistant_id,
+                "delta": text, "chunk_index": 1, "done": False, "time_utc": _utc_now_iso(),
+            })
+            await websocket.send_json({
+                "type": "chat_done", "nonce": nonce, "message_id": assistant_id,
+                "status": "completed", "time_utc": _utc_now_iso(),
+            })
+            return
+
+        # True LLM streaming
+        llm_response = stream_result["response"]
+        llm_model = str(stream_result.get("model") or "")
+        llm_provider = stream_result.get("provider")
+        loop = asyncio.get_event_loop()
+        accumulated: list[str] = []
+        chunk_idx = 0
+        gen = iter_llm_chunks(llm_response)
+        sentinel = object()
+
+        while True:
+            delta = await loop.run_in_executor(None, next, gen, sentinel)
+            if delta is sentinel:
+                break
+            chunk_idx += 1
+            accumulated.append(delta)
+            await websocket.send_json({
+                "type": "chat_chunk", "nonce": nonce, "message_id": assistant_id,
+                "delta": delta, "chunk_index": chunk_idx, "done": False,
+                "time_utc": _utc_now_iso(),
+            })
+
+        full_text = "".join(accumulated).strip()
+        status = "completed" if full_text else "failed"
+        update_chat_message(assistant_id, content=full_text or "Empty response",
+                            status=status, model=llm_model,
+                            meta={**meta, "provider": llm_provider, "model": llm_model,
+                                  "generated_at": int(time.time()), "streamed": True})
+        if full_text:
+            record_llm_request_result(provider=llm_provider or "", operation="chat_stream_ws", ok=True)
+        else:
+            record_llm_request_result(provider=llm_provider or "", operation="chat_stream_ws", ok=False, error="empty_stream")
+
+        await websocket.send_json({
+            "type": "chat_done", "nonce": nonce, "message_id": assistant_id,
+            "status": status, "time_utc": _utc_now_iso(),
+        })
+
+    except Exception as e:
+        await websocket.send_json({
+            "type": "chat_error", "nonce": nonce,
+            "error": str(e)[:500], "time_utc": _utc_now_iso(),
+        })
 
 
 @app.websocket("/ws/live")
@@ -2007,6 +2353,10 @@ async def ws_live(websocket: WebSocket):
                 selected_repo = candidate or None
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong", "time_utc": _utc_now_iso()})
+            elif msg_type == "chat_send":
+                # ── WebSocket chat streaming ────────────────────────
+                await _ws_handle_chat_send(websocket, payload)
+                continue  # skip snapshot push after chat stream
 
         try:
             snapshot = _live_snapshot(selected_repo)
@@ -2099,6 +2449,53 @@ def stop_repo(repo: str):
         "stopped": bool(snapshot.get("stopped")),
         "worker": snapshot,
     }
+
+
+# ── Self-tasks ─────────────────────────────────────────────────────
+
+from core.self_tasks import (
+    list_self_tasks as _list_self_tasks,
+    get_self_task as _get_self_task,
+    snooze_self_task as _snooze_self_task,
+    dismiss_self_task as _dismiss_self_task,
+    run_self_task_scan as _run_self_task_scan,
+)
+
+
+@app.get("/self-tasks")
+def self_tasks_list(status: str | None = Query(default=None), limit: int = Query(default=200)):
+    tasks = _list_self_tasks(status=status, limit=min(int(limit), 2000))
+    return {"time_utc": _utc_now_iso(), "count": len(tasks), "tasks": tasks}
+
+
+@app.get("/self-tasks/{task_id}")
+def self_tasks_get(task_id: int):
+    task = _get_self_task(int(task_id))
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Self-task {task_id} not found")
+    return {"time_utc": _utc_now_iso(), "task": task}
+
+
+@app.post("/self-tasks/{task_id}/snooze")
+def self_tasks_snooze(task_id: int, seconds: int = Query(default=86400)):
+    task = _snooze_self_task(int(task_id), seconds=int(seconds))
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Self-task {task_id} not found")
+    return {"time_utc": _utc_now_iso(), "task": task}
+
+
+@app.post("/self-tasks/{task_id}/dismiss")
+def self_tasks_dismiss(task_id: int):
+    task = _dismiss_self_task(int(task_id))
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Self-task {task_id} not found")
+    return {"time_utc": _utc_now_iso(), "task": task}
+
+
+@app.post("/self-tasks/scan")
+def self_tasks_scan():
+    result = _run_self_task_scan()
+    return {"time_utc": _utc_now_iso(), **result}
 
 
 @app.on_event("shutdown")

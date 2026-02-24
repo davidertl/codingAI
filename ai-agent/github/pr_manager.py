@@ -19,7 +19,7 @@ def _find_open_pr_for_branch(repo, branch):
         "head": f"{owner}:{branch}",
         "state": "open",
     }
-    r = requests.get(check_url, headers=headers, params=params)
+    r = requests.get(check_url, headers=headers, params=params, timeout=30)
     r.raise_for_status()
     existing = r.json()
     return existing[0] if existing else None
@@ -57,7 +57,7 @@ def create_or_get_pr(repo, branch, issue_number):
         "body": f"Automated fix attempt for issue #{issue_number}",
     }
 
-    r = requests.post(create_url, headers=headers, json=data)
+    r = requests.post(create_url, headers=headers, json=data, timeout=30)
     if r.status_code != 201:
         print("PR creation failed:", r.text)
         return None
@@ -75,7 +75,7 @@ def list_pr_comments(repo, pr_number, per_page=100):
     headers = _headers()
     owner = get_github_owner()
     list_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments"
-    r = requests.get(list_url, headers=headers, params={"per_page": per_page})
+    r = requests.get(list_url, headers=headers, params={"per_page": per_page}, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -104,7 +104,7 @@ def upsert_pr_comment(repo, pr_number, body, marker="<!-- codingai-test-report -
     if existing_comment:
         comment_id = existing_comment["id"]
         update_url = f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}"
-        ur = requests.patch(update_url, headers=headers, json={"body": body})
+        ur = requests.patch(update_url, headers=headers, json={"body": body}, timeout=30)
         ur.raise_for_status()
         return {
             "id": comment_id,
@@ -112,7 +112,7 @@ def upsert_pr_comment(repo, pr_number, body, marker="<!-- codingai-test-report -
             "url": ur.json().get("html_url"),
         }
 
-    cr = requests.post(list_url, headers=headers, json={"body": body})
+    cr = requests.post(list_url, headers=headers, json={"body": body}, timeout=30)
     cr.raise_for_status()
     created = cr.json()
     return {

@@ -1,5 +1,5 @@
 # Strategy Mapping
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 Source: `ai-agent/core/test_runner.py`
 

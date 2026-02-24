@@ -11,7 +11,16 @@ from dotenv import load_dotenv
 from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
-from core.projects_store import get_project_push_gate_mode
+from core.projects_store import get_project_push_gate_mode, get_project_labels, list_projects as _list_projects_store
+from core.memory_store import (
+    get_strategy_memory,
+    set_strategy_memory,
+    get_error_memory,
+    update_error_memory,
+    migrate_from_state as migrate_memory_from_state,
+    init_memory_tables,
+)
+from core.self_tasks import run_self_task_scan
 from core.test_runner import analyze_repo, run_tests
 from orchestrator.engine import OrchestratorEngine
 from github.checks_manager import create_completed_check_run
@@ -53,7 +62,7 @@ POLL_INTERVAL = 300
 REPORT_MARKER = "<!-- codingai-test-report -->"
 FAILURE_COMMENT_MARKER = "<!-- codingai-failure-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
-ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 PAUSE_WINDOW_SECONDS = int(os.getenv("CODINGAI_PAUSE_WINDOW_SECONDS", "10") or "10")
 MAX_PAUSE_SECONDS = int(os.getenv("CODINGAI_MAX_PAUSE_SECONDS", "300") or "300")
@@ -441,6 +450,8 @@ def _apply_strategy_memory_update(state, repo, test_report):
     memory_update = test_report.get("strategy_memory_update")
     if not isinstance(memory_update, dict):
         return
+    # Write to SQLite (primary) and keep state.json in sync for backwards compat
+    set_strategy_memory(repo, memory_update)
     state.setdefault("strategy_memory", {})[repo] = memory_update
 
 
@@ -448,6 +459,8 @@ def _apply_error_memory_update(state, repo, test_report):
     updates = test_report.get("error_memory_update")
     if not isinstance(updates, dict) or not updates:
         return
+    # Write to SQLite (primary) and keep state.json in sync for backwards compat
+    update_error_memory(repo, updates)
     repo_map = state.setdefault("strategy_error_memory", {}).setdefault(repo, {})
     repo_map.update(updates)
 
@@ -1122,8 +1135,8 @@ def process_issue(repo, issue, state, policy=None):
         default_branch = get_default_branch(repo)
         branch_sha = get_branch_sha(repo, branch)
         base_sha = branch_sha or get_branch_sha(repo, default_branch)
-        repo_strategy_memory = state.get("strategy_memory", {}).get(repo, {})
-        repo_error_memory = state.get("strategy_error_memory", {}).get(repo, {})
+        repo_strategy_memory = get_strategy_memory(repo) or state.get("strategy_memory", {}).get(repo, {})
+        repo_error_memory = get_error_memory(repo) or state.get("strategy_error_memory", {}).get(repo, {})
 
         if not base_sha:
             raise RuntimeError("Could not resolve base SHA for patch pipeline.")
@@ -1134,8 +1147,9 @@ def process_issue(repo, issue, state, policy=None):
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
         repo_analysis = analyze_repo(repo_path)
+        _v2_primary_handled = False
         if ORCHESTRATOR_V2_ENABLED:
-            _set_pipeline_stage(state, repo, number, "orchestrator_v2_preflight", active_branch=branch)
+            _set_pipeline_stage(state, repo, number, "orchestrator_v2", active_branch=branch)
             v2_result = ORCHESTRATOR_V2.run_issue(
                 repo_name=repo,
                 issue=issue_for_llm,
@@ -1155,14 +1169,14 @@ def process_issue(repo, issue, state, policy=None):
                     state,
                     repo,
                     number,
-                    f"Orchestrator V2 preflight failed for issue #{number}.",
+                    f"Orchestrator V2 failed for issue #{number}.",
                     v2_result.run_outcome.error_reason or v2_result.run_outcome.summary,
                     policy=policy,
                     started_at=issue_started,
                 )
                 return
             record_event(
-                "orchestrator_v2_preflight_passed",
+                "orchestrator_v2_passed",
                 repo=repo,
                 issue_number=number,
                 status="ok",
@@ -1170,286 +1184,311 @@ def process_issue(repo, issue, state, policy=None):
                     "run_id": v2_result.run_id,
                     "attempts": int(v2_result.run_outcome.attempts_count or 0),
                     "used_redundancy": bool(v2_result.used_redundancy),
+                    "patch_ops": len(v2_result.patch_ops or []),
                 },
             )
-            _checkout_local_branch_at_sha(repo_path, branch, base_sha)
+            # V2 is the primary pipeline — use its patch_ops and test results directly
+            patch_ops = list(v2_result.patch_ops or [])
+            output = str(v2_result.test_output or "")
+            test_report = v2_result.test_report if isinstance(v2_result.test_report, dict) else {}
+            success = bool(test_report.get("success", True))
+            patch_result = {
+                "patch_ops": patch_ops,
+                "reason": str(v2_result.run_outcome.summary or "V2 orchestrator"),
+                "confidence": float(v2_result.run_outcome.success_criteria.get("confidence", 0.0) if v2_result.run_outcome.success_criteria else 0.0),
+                "test_patch_applied": False,
+                "test_patch_ops_added": 0,
+                "test_patch_confidence": 0.0,
+            }
+            attempts_count = int(v2_result.run_outcome.attempts_count or 1)
+            # Set strategy variables for shared dry-run/state block
+            confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
+            strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
+            strategy_quarantine_threshold = max(1, int(strategy_policy.get("quarantine_threshold", 3)))
+            strategy_quarantine_seconds = max(0, int(strategy_policy.get("quarantine_seconds", 12 * 60 * 60)))
+            # Apply strategy memory updates from V2 test report
+            _apply_strategy_memory_update(state, repo, test_report)
+            _apply_error_memory_update(state, repo, test_report)
+            _v2_primary_handled = True
 
-        _set_pipeline_stage(state, repo, number, "patching", active_branch=branch)
-        patch_started = time.time()
-        patch_result = propose_patch_ops(
-            repo_path=repo_path,
-            repo_name=repo,
-            issue=issue_for_llm,
-            repo_analysis=repo_analysis,
-            max_ops=int(patch_policy.get("max_patch_ops", 20)),
-        )
-        patch_duration_ms = _elapsed_ms(patch_started)
-        patch_ops = patch_result.get("patch_ops", [])
-        patch_result["test_patch_ops_added"] = 0
-        observe_duration_ms("codingai_patch_generation_duration_ms", patch_duration_ms or 0, labels={"repo": repo})
-        record_event(
-            "patch_generated",
-            repo=repo,
-            issue_number=number,
-            status="ok" if patch_ops else "empty",
-            duration_ms=patch_duration_ms,
-            data={"ops": len(patch_ops), "confidence": float(patch_result.get("confidence", 0.0) or 0.0)},
-        )
-
-        if not patch_ops:
-            reason = patch_result.get("reason", "Model returned no patch operations.")
-            _register_failure(
-                state,
-                repo,
-                number,
-                f"Patch generation failed for issue #{number}.",
-                reason,
-                policy=policy,
-                started_at=issue_started,
-            )
-            return
-
-        auto_test_patch_enabled = bool(patch_policy.get("auto_generate_test_patches", False))
-        test_patch_on_failure_only = bool(patch_policy.get("test_patch_on_failure_only", True))
-        try:
-            test_patch_min_confidence = float(patch_policy.get("test_patch_min_confidence", 0.55))
-        except Exception:
-            test_patch_min_confidence = 0.55
-        test_patch_min_confidence = max(0.0, min(1.0, test_patch_min_confidence))
-
-        patch_result["test_patch_ops_added"] = 0
-        patch_result["test_patch_confidence"] = 0.0
-        patch_result["test_patch_reason"] = ""
-        patch_result["test_patch_applied"] = False
-        patch_result["test_patch_min_confidence"] = test_patch_min_confidence
-
-        _apply_patch_ops_locally(repo_path, patch_ops)
-        inc_counter("codingai_patch_ops_total", value=len(patch_ops), labels={"repo": repo})
-
-        if not _local_repo_has_changes(repo_path):
-            _register_failure(
-                state,
-                repo,
-                number,
-                f"Patch ops produced no effective file changes for issue #{number}.",
-                patch_result.get("reason", ""),
-                policy=policy,
-                started_at=issue_started,
-            )
-            return
-
-        diff_text, diff_len = _capture_diff(repo_path)
-        pause_deadline = time.time() + PAUSE_WINDOW_SECONDS
-        _set_pipeline_stage(
-            state,
-            repo,
-            number,
-            "pause_window",
-            diff=diff_text,
-            diff_length=diff_len,
-            pause_deadline=int(pause_deadline),
-            paused=False,
-            pause_requested=False,
-            cancel_requested=False,
-        )
-        try:
-            _await_pause_window(repo, number, initial_deadline=pause_deadline)
-        except RuntimeError as cancel_err:
-            _register_failure(
-                state,
-                repo,
-                number,
-                f"Pipeline canceled for issue #{number}.",
-                str(cancel_err),
-                policy=policy,
-                started_at=issue_started,
-            )
-            return
-
-        _set_pipeline_stage(state, repo, number, "testing")
-        print("Patch applied locally. Running tests on patched repository...")
-        confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
-        strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
-        strategy_quarantine_threshold = max(1, int(strategy_policy.get("quarantine_threshold", 3)))
-        strategy_quarantine_seconds = max(0, int(strategy_policy.get("quarantine_seconds", 12 * 60 * 60)))
-        strategy_memory_half_life = max(0, int(strategy_policy.get("memory_half_life_seconds", 7 * 24 * 60 * 60)))
-
-        tests_started = time.time()
-        success, output, test_report = run_tests(
-            repo_path,
-            repo_name=repo,
-            max_attempts=strategy_max_attempts,
-            strategy_memory=repo_strategy_memory,
-            error_memory=repo_error_memory,
-            min_confidence_for_switch=confidence_threshold,
-            strategy_quarantine_threshold=strategy_quarantine_threshold,
-            strategy_quarantine_seconds=strategy_quarantine_seconds,
-            strategy_memory_half_life_seconds=strategy_memory_half_life,
-        )
-        tests_duration_ms = _elapsed_ms(tests_started)
-        attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else 0
-        observe_duration_ms(
-            "codingai_test_execution_duration_ms",
-            tests_duration_ms or 0,
-            labels={"repo": repo, "result": "passed" if success else "failed"},
-        )
-        inc_counter("codingai_test_runs_total", labels={"repo": repo, "result": "passed" if success else "failed"})
-        inc_counter("codingai_test_attempts_total", value=max(1, attempts_count), labels={"repo": repo})
-        record_event(
-            "tests_finished",
-            repo=repo,
-            issue_number=number,
-            status="passed" if success else "failed",
-            duration_ms=tests_duration_ms,
-            data={"attempts": attempts_count},
-        )
-
-        if (
-            not success
-            and auto_test_patch_enabled
-            and test_patch_on_failure_only
-        ):
-            fallback_started = time.time()
-            record_event(
-                "test_patch_fallback_started",
-                repo=repo,
-                issue_number=number,
-                status="started",
-                data={"base_attempts": attempts_count},
-            )
-            test_patch_started = time.time()
-            test_patch_result = propose_test_patch_ops(
+        if not _v2_primary_handled:
+            # ── V1 pipeline (legacy fallback) ─────────────────────────────
+            _set_pipeline_stage(state, repo, number, "patching", active_branch=branch)
+            patch_started = time.time()
+            patch_result = propose_patch_ops(
                 repo_path=repo_path,
                 repo_name=repo,
                 issue=issue_for_llm,
                 repo_analysis=repo_analysis,
-                base_patch_ops=patch_ops,
-                max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
-            )
-            test_patch_duration_ms = _elapsed_ms(test_patch_started)
-            observe_duration_ms(
-                "codingai_test_patch_generation_duration_ms",
-                test_patch_duration_ms or 0,
-                labels={"repo": repo},
-            )
-            test_patch_ops = test_patch_result.get("patch_ops", [])
-            test_patch_conf = float(test_patch_result.get("confidence", 0.0) or 0.0)
-            test_patch_reason = str(test_patch_result.get("reason", ""))
-            patch_result["test_patch_confidence"] = test_patch_conf
-            patch_result["test_patch_reason"] = test_patch_reason[:500]
-
-            if test_patch_ops and test_patch_conf >= test_patch_min_confidence:
-                patch_ops, added, added_ops = _merge_patch_ops(
-                    patch_ops,
-                    test_patch_ops,
-                    max_ops=int(patch_policy.get("max_total_patch_ops", 30)),
+                max_ops=int(patch_policy.get("max_patch_ops", 20)),
                 )
-                patch_result["test_patch_ops_added"] = added
-                if added > 0:
-                    _apply_patch_ops_locally(repo_path, added_ops)
-                    patch_result["test_patch_applied"] = True
-                    inc_counter("codingai_patch_ops_total", value=added, labels={"repo": repo})
-                    print(
-                        f"Applied staged test patch ops: {added} "
-                        f"(candidate={len(test_patch_ops)} conf={test_patch_conf:.2f})"
-                    )
+            patch_duration_ms = _elapsed_ms(patch_started)
+            patch_ops = patch_result.get("patch_ops", [])
+            patch_result["test_patch_ops_added"] = 0
+            observe_duration_ms("codingai_patch_generation_duration_ms", patch_duration_ms or 0, labels={"repo": repo})
+            record_event(
+                "patch_generated",
+                repo=repo,
+                issue_number=number,
+                status="ok" if patch_ops else "empty",
+                duration_ms=patch_duration_ms,
+                data={"ops": len(patch_ops), "confidence": float(patch_result.get("confidence", 0.0) or 0.0)},
+            )
 
-                    fallback_strategy_memory = test_report.get("strategy_memory_update", repo_strategy_memory)
-                    tests_fallback_started = time.time()
-                    fallback_success, fallback_output, fallback_report = run_tests(
-                        repo_path,
-                        repo_name=repo,
-                        max_attempts=strategy_max_attempts,
-                        strategy_memory=fallback_strategy_memory,
-                        min_confidence_for_switch=confidence_threshold,
-                        strategy_quarantine_threshold=strategy_quarantine_threshold,
-                        strategy_quarantine_seconds=strategy_quarantine_seconds,
-                        strategy_memory_half_life_seconds=strategy_memory_half_life,
-                    )
-                    fallback_tests_duration_ms = _elapsed_ms(tests_fallback_started)
-                    fallback_attempts = len(fallback_report.get("attempts", [])) if isinstance(fallback_report, dict) else 0
-                    observe_duration_ms(
-                        "codingai_test_execution_duration_ms",
-                        fallback_tests_duration_ms or 0,
-                        labels={"repo": repo, "result": "passed" if fallback_success else "failed"},
-                    )
-                    inc_counter(
-                        "codingai_test_runs_total",
-                        labels={"repo": repo, "result": "passed" if fallback_success else "failed"},
-                    )
-                    inc_counter("codingai_test_attempts_total", value=max(1, fallback_attempts), labels={"repo": repo})
-                    record_event(
-                        "tests_finished",
-                        repo=repo,
-                        issue_number=number,
-                        status="passed" if fallback_success else "failed",
-                        duration_ms=fallback_tests_duration_ms,
-                        data={"attempts": fallback_attempts, "stage": "test_patch_fallback"},
-                    )
+            if not patch_ops:
+                reason = patch_result.get("reason", "Model returned no patch operations.")
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Patch generation failed for issue #{number}.",
+                    reason,
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
 
-                    success = fallback_success
-                    output = fallback_output
-                    test_report = _merge_test_reports(
-                        test_report,
-                        fallback_report,
-                        fallback_label="test_patch_fallback",
+            auto_test_patch_enabled = bool(patch_policy.get("auto_generate_test_patches", False))
+            test_patch_on_failure_only = bool(patch_policy.get("test_patch_on_failure_only", True))
+            try:
+                test_patch_min_confidence = float(patch_policy.get("test_patch_min_confidence", 0.55))
+            except Exception:
+                test_patch_min_confidence = 0.55
+            test_patch_min_confidence = max(0.0, min(1.0, test_patch_min_confidence))
+
+            patch_result["test_patch_ops_added"] = 0
+            patch_result["test_patch_confidence"] = 0.0
+            patch_result["test_patch_reason"] = ""
+            patch_result["test_patch_applied"] = False
+            patch_result["test_patch_min_confidence"] = test_patch_min_confidence
+
+            _apply_patch_ops_locally(repo_path, patch_ops)
+            inc_counter("codingai_patch_ops_total", value=len(patch_ops), labels={"repo": repo})
+
+            if not _local_repo_has_changes(repo_path):
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Patch ops produced no effective file changes for issue #{number}.",
+                    patch_result.get("reason", ""),
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+
+            diff_text, diff_len = _capture_diff(repo_path)
+            pause_deadline = time.time() + PAUSE_WINDOW_SECONDS
+            _set_pipeline_stage(
+                state,
+                repo,
+                number,
+                "pause_window",
+                diff=diff_text,
+                diff_length=diff_len,
+                pause_deadline=int(pause_deadline),
+                paused=False,
+                pause_requested=False,
+                cancel_requested=False,
+            )
+            try:
+                _await_pause_window(repo, number, initial_deadline=pause_deadline)
+            except RuntimeError as cancel_err:
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Pipeline canceled for issue #{number}.",
+                    str(cancel_err),
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+
+            _set_pipeline_stage(state, repo, number, "testing")
+            print("Patch applied locally. Running tests on patched repository...")
+            confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
+            strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
+            strategy_quarantine_threshold = max(1, int(strategy_policy.get("quarantine_threshold", 3)))
+            strategy_quarantine_seconds = max(0, int(strategy_policy.get("quarantine_seconds", 12 * 60 * 60)))
+            strategy_memory_half_life = max(0, int(strategy_policy.get("memory_half_life_seconds", 7 * 24 * 60 * 60)))
+
+            tests_started = time.time()
+            success, output, test_report = run_tests(
+                repo_path,
+                repo_name=repo,
+                max_attempts=strategy_max_attempts,
+                strategy_memory=repo_strategy_memory,
+                error_memory=repo_error_memory,
+                min_confidence_for_switch=confidence_threshold,
+                strategy_quarantine_threshold=strategy_quarantine_threshold,
+                strategy_quarantine_seconds=strategy_quarantine_seconds,
+                strategy_memory_half_life_seconds=strategy_memory_half_life,
+            )
+            tests_duration_ms = _elapsed_ms(tests_started)
+            attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else 0
+            observe_duration_ms(
+                "codingai_test_execution_duration_ms",
+                tests_duration_ms or 0,
+                labels={"repo": repo, "result": "passed" if success else "failed"},
+            )
+            inc_counter("codingai_test_runs_total", labels={"repo": repo, "result": "passed" if success else "failed"})
+            inc_counter("codingai_test_attempts_total", value=max(1, attempts_count), labels={"repo": repo})
+            record_event(
+                "tests_finished",
+                repo=repo,
+                issue_number=number,
+                status="passed" if success else "failed",
+                duration_ms=tests_duration_ms,
+                data={"attempts": attempts_count},
+            )
+
+            if (
+                not success
+                and auto_test_patch_enabled
+                and test_patch_on_failure_only
+            ):
+                fallback_started = time.time()
+                record_event(
+                    "test_patch_fallback_started",
+                    repo=repo,
+                    issue_number=number,
+                    status="started",
+                    data={"base_attempts": attempts_count},
+                )
+                test_patch_started = time.time()
+                test_patch_result = propose_test_patch_ops(
+                    repo_path=repo_path,
+                    repo_name=repo,
+                    issue=issue_for_llm,
+                    repo_analysis=repo_analysis,
+                    base_patch_ops=patch_ops,
+                    max_ops=int(patch_policy.get("max_test_patch_ops", 6)),
+                )
+                test_patch_duration_ms = _elapsed_ms(test_patch_started)
+                observe_duration_ms(
+                    "codingai_test_patch_generation_duration_ms",
+                    test_patch_duration_ms or 0,
+                    labels={"repo": repo},
+                )
+                test_patch_ops = test_patch_result.get("patch_ops", [])
+                test_patch_conf = float(test_patch_result.get("confidence", 0.0) or 0.0)
+                test_patch_reason = str(test_patch_result.get("reason", ""))
+                patch_result["test_patch_confidence"] = test_patch_conf
+                patch_result["test_patch_reason"] = test_patch_reason[:500]
+
+                if test_patch_ops and test_patch_conf >= test_patch_min_confidence:
+                    patch_ops, added, added_ops = _merge_patch_ops(
+                        patch_ops,
+                        test_patch_ops,
+                        max_ops=int(patch_policy.get("max_total_patch_ops", 30)),
                     )
-                    attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else attempts_count
-                    record_event(
-                        "test_patch_fallback_finished",
-                        repo=repo,
-                        issue_number=number,
-                        status="applied",
-                        duration_ms=_elapsed_ms(fallback_started),
-                        data={"added_ops": added, "confidence": test_patch_conf, "fallback_success": fallback_success},
-                    )
+                    patch_result["test_patch_ops_added"] = added
+                    if added > 0:
+                        _apply_patch_ops_locally(repo_path, added_ops)
+                        patch_result["test_patch_applied"] = True
+                        inc_counter("codingai_patch_ops_total", value=added, labels={"repo": repo})
+                        print(
+                            f"Applied staged test patch ops: {added} "
+                            f"(candidate={len(test_patch_ops)} conf={test_patch_conf:.2f})"
+                        )
+
+                        fallback_strategy_memory = test_report.get("strategy_memory_update", repo_strategy_memory)
+                        tests_fallback_started = time.time()
+                        fallback_success, fallback_output, fallback_report = run_tests(
+                            repo_path,
+                            repo_name=repo,
+                            max_attempts=strategy_max_attempts,
+                            strategy_memory=fallback_strategy_memory,
+                            min_confidence_for_switch=confidence_threshold,
+                            strategy_quarantine_threshold=strategy_quarantine_threshold,
+                            strategy_quarantine_seconds=strategy_quarantine_seconds,
+                            strategy_memory_half_life_seconds=strategy_memory_half_life,
+                        )
+                        fallback_tests_duration_ms = _elapsed_ms(tests_fallback_started)
+                        fallback_attempts = len(fallback_report.get("attempts", [])) if isinstance(fallback_report, dict) else 0
+                        observe_duration_ms(
+                            "codingai_test_execution_duration_ms",
+                            fallback_tests_duration_ms or 0,
+                            labels={"repo": repo, "result": "passed" if fallback_success else "failed"},
+                        )
+                        inc_counter(
+                            "codingai_test_runs_total",
+                            labels={"repo": repo, "result": "passed" if fallback_success else "failed"},
+                        )
+                        inc_counter("codingai_test_attempts_total", value=max(1, fallback_attempts), labels={"repo": repo})
+                        record_event(
+                            "tests_finished",
+                            repo=repo,
+                            issue_number=number,
+                            status="passed" if fallback_success else "failed",
+                            duration_ms=fallback_tests_duration_ms,
+                            data={"attempts": fallback_attempts, "stage": "test_patch_fallback"},
+                        )
+
+                        success = fallback_success
+                        output = fallback_output
+                        test_report = _merge_test_reports(
+                            test_report,
+                            fallback_report,
+                            fallback_label="test_patch_fallback",
+                        )
+                        attempts_count = len(test_report.get("attempts", [])) if isinstance(test_report, dict) else attempts_count
+                        record_event(
+                            "test_patch_fallback_finished",
+                            repo=repo,
+                            issue_number=number,
+                            status="applied",
+                            duration_ms=_elapsed_ms(fallback_started),
+                            data={"added_ops": added, "confidence": test_patch_conf, "fallback_success": fallback_success},
+                        )
+                    else:
+                        record_event(
+                            "test_patch_fallback_finished",
+                            repo=repo,
+                            issue_number=number,
+                            status="skipped",
+                            duration_ms=_elapsed_ms(fallback_started),
+                            data={"reason": "no_unique_test_patch_ops", "confidence": test_patch_conf},
+                        )
                 else:
+                    skip_reason = "low_confidence" if test_patch_ops else "no_test_patch_ops"
                     record_event(
                         "test_patch_fallback_finished",
                         repo=repo,
                         issue_number=number,
                         status="skipped",
                         duration_ms=_elapsed_ms(fallback_started),
-                        data={"reason": "no_unique_test_patch_ops", "confidence": test_patch_conf},
+                        data={
+                            "reason": skip_reason,
+                            "confidence": test_patch_conf,
+                            "min_confidence": test_patch_min_confidence,
+                            "model_reason": test_patch_reason[:200],
+                        },
                     )
-            else:
-                skip_reason = "low_confidence" if test_patch_ops else "no_test_patch_ops"
-                record_event(
-                    "test_patch_fallback_finished",
-                    repo=repo,
-                    issue_number=number,
-                    status="skipped",
-                    duration_ms=_elapsed_ms(fallback_started),
-                    data={
-                        "reason": skip_reason,
-                        "confidence": test_patch_conf,
-                        "min_confidence": test_patch_min_confidence,
-                        "model_reason": test_patch_reason[:200],
-                    },
+
+            _apply_strategy_memory_update(state, repo, test_report)
+            _apply_error_memory_update(state, repo, test_report)
+
+            if not success:
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Patched repository failed tests for issue #{number}.",
+                    output,
+                    policy=policy,
+                    started_at=issue_started,
                 )
-
-        _apply_strategy_memory_update(state, repo, test_report)
-        _apply_error_memory_update(state, repo, test_report)
-
-        if not success:
-            _register_failure(
+                return
+            _set_pipeline_stage(
                 state,
                 repo,
                 number,
-                f"Patched repository failed tests for issue #{number}.",
-                output,
-                policy=policy,
-                started_at=issue_started,
+                "passed",
+                test_output_excerpt=str(output or "")[:2000],
+                attempts=attempts_count,
             )
-            return
-        _set_pipeline_stage(
-            state,
-            repo,
-            number,
-            "passed",
-            test_output_excerpt=str(output or "")[:2000],
-            attempts=attempts_count,
-        )
 
         if dry_run:
             issue_state["active_branch"] = branch
@@ -1671,7 +1710,9 @@ def _run_repo_cycle(repo, target_issue_number: int | None = None):
         )
     else:
         try:
-            issues = get_ai_issues(repo)
+            _labels = get_project_labels(repo)
+            _labels_str = ",".join(_labels) if _labels else "ai-fix"
+            issues = get_ai_issues(repo, labels=_labels_str)
         except Exception as e:
             cycle_status = "issues_fetch_failed"
             print(f"Failed to fetch issues for {repo}: {e}")
@@ -1754,6 +1795,16 @@ def get_available_repos():
             seen.add(name)
             aggregated.append(name)
 
+    # Filter out projects that are disabled in the projects DB
+    if aggregated:
+        try:
+            projects = _list_projects_store(aggregated)
+            disabled = {p["repo"] for p in projects if not p.get("enabled", True)}
+            if disabled:
+                aggregated = [r for r in aggregated if r not in disabled]
+        except Exception:
+            pass  # If DB unavailable, return all repos
+
     return aggregated
 
 
@@ -1797,7 +1848,7 @@ def loop_all(repos):
 
 
 def self_checks():
-    """Run lightweight self-checks (disk usage, job cleanup)."""
+    """Run lightweight self-checks (disk usage, job cleanup, self-task scan)."""
     disk = disk_usage_report()
     record_event(
         "self_check_disk",
@@ -1806,6 +1857,10 @@ def self_checks():
         data=disk,
     )
     cleanup_jobs()
+    try:
+        run_self_task_scan()
+    except Exception as exc:
+        record_event("self_task_scan_error", status="error", data={"error": str(exc)[:200]})
 
 
 if __name__ == "__main__":

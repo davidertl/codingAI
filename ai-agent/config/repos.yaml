@@ -1,6 +1,0 @@
-# Optional per-repo metadata template.
-# This file is not used as a source of truth for available repositories.
-example-repo:
-  type: node
-  test_path: .
-  build_fallback: false

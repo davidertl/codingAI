@@ -1,5 +1,5 @@
 # Autonomy Improvements
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 ## Implemented capabilities
 

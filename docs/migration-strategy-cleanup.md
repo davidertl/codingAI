@@ -1,5 +1,5 @@
 # Strict Cleanup Migration Strategy
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 This cleanup removes old naming patterns while keeping runtime behavior compatible for existing installs.
 

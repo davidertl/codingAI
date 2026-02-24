@@ -12,6 +12,7 @@ from orchestrator.errors import AbortRunError, OrchestratorValidationError
 from orchestrator.policy import validate_code_bundle
 from orchestrator.roles import (
     build_execution_plan,
+    build_research_brief,
     build_task_specification,
     generate_code_bundle,
     interpret_test_failure,
@@ -233,6 +234,26 @@ class OrchestratorEngine:
                         break
         plan = build_execution_plan(task_spec, likely_files=likely_files)
         append_attempt(run_id=run_id, phase="planner", attempt_index=1, status="ok", payload=plan.model_dump())
+
+        # ── Researcher: gather external context if search is available ──
+        research_brief = None
+        try:
+            research_query = str(task_spec.title or "") + " " + str(task_spec.description or "")
+            research_brief = build_research_brief(research_query.strip(), max_results=6)
+            append_attempt(
+                run_id=run_id, phase="researcher", attempt_index=1, status="ok",
+                payload=research_brief.model_dump(),
+            )
+            add_artifact(
+                run_id=run_id, name="research_brief.json",
+                body=research_brief.model_dump_json(indent=2),
+                sha256=sha256_text(research_brief.model_dump_json()),
+            )
+        except Exception as research_err:
+            append_attempt(
+                run_id=run_id, phase="researcher", attempt_index=1, status="skipped",
+                payload={"error": str(research_err)[:500]},
+            )
 
         add_artifact(run_id=run_id, name="task_spec.json", body=task_spec.model_dump_json(indent=2), sha256=sha256_text(task_spec.model_dump_json()))
         add_artifact(run_id=run_id, name="execution_plan.json", body=plan.model_dump_json(indent=2), sha256=sha256_text(plan.model_dump_json()))

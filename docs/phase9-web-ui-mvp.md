@@ -1,5 +1,5 @@
 # Phase 9: Web UI MVP
-Version: experimental-0.22.0
+Version: experimental-0.23.0
 
 ## Scope
 
