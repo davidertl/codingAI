@@ -44,6 +44,75 @@ _TELEMETRY_COUNTERS = {
     "failovers": 0,
 }
 
+_TOKEN_COUNTERS = {
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_tokens": 0,
+    "by_provider": {
+        "openai": {"prompt": 0, "completion": 0, "total": 0, "cost_usd": 0.0},
+        "local": {"prompt": 0, "completion": 0, "total": 0, "cost_usd": 0.0},
+    },
+    "by_role": {},
+}
+
+_COST_PER_1K_TOKENS = {
+    "gpt-4o": {"prompt": 0.0025, "completion": 0.01},
+    "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
+    "gpt-4-turbo": {"prompt": 0.01, "completion": 0.03},
+    "gpt-3.5-turbo": {"prompt": 0.0005, "completion": 0.0015},
+}
+
+
+def record_token_usage(
+    *,
+    provider: str,
+    model: str = "",
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    role: str = "",
+):
+    total = prompt_tokens + completion_tokens
+    _TOKEN_COUNTERS["total_prompt_tokens"] += prompt_tokens
+    _TOKEN_COUNTERS["total_completion_tokens"] += completion_tokens
+    _TOKEN_COUNTERS["total_tokens"] += total
+
+    prov_key = provider if provider in _TOKEN_COUNTERS["by_provider"] else "local"
+    prov = _TOKEN_COUNTERS["by_provider"][prov_key]
+    prov["prompt"] += prompt_tokens
+    prov["completion"] += completion_tokens
+    prov["total"] += total
+
+    cost = 0.0
+    model_lower = model.lower().strip()
+    for prefix, rates in _COST_PER_1K_TOKENS.items():
+        if prefix in model_lower:
+            cost = (prompt_tokens / 1000.0) * rates["prompt"] + (completion_tokens / 1000.0) * rates["completion"]
+            break
+    prov["cost_usd"] += cost
+
+    if role:
+        if role not in _TOKEN_COUNTERS["by_role"]:
+            _TOKEN_COUNTERS["by_role"][role] = {"prompt": 0, "completion": 0, "total": 0, "cost_usd": 0.0}
+        role_entry = _TOKEN_COUNTERS["by_role"][role]
+        role_entry["prompt"] += prompt_tokens
+        role_entry["completion"] += completion_tokens
+        role_entry["total"] += total
+        role_entry["cost_usd"] += cost
+
+
+def get_token_usage() -> dict:
+    return dict(_TOKEN_COUNTERS)
+
+
+def reset_token_usage():
+    _TOKEN_COUNTERS["total_prompt_tokens"] = 0
+    _TOKEN_COUNTERS["total_completion_tokens"] = 0
+    _TOKEN_COUNTERS["total_tokens"] = 0
+    for prov in _TOKEN_COUNTERS["by_provider"].values():
+        for k in prov:
+            prov[k] = 0 if isinstance(prov[k], int) else 0.0
+    _TOKEN_COUNTERS["by_role"].clear()
+
 
 def _now_ts() -> int:
     return int(time.time())

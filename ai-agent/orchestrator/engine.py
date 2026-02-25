@@ -5,15 +5,17 @@ import time
 from dataclasses import dataclass
 
 from core.observability import record_event
+from core.docker_executor import DockerExecutor as _DockerExecutor, should_use_docker_executor
 from core.sandbox_runner_client import SandboxRunnerClient, should_use_sandbox_mode
 from core.test_runner import run_tests
-from orchestrator.contracts import RunOutcome
+from orchestrator.contracts import CodeBundle, RunOutcome
 from orchestrator.errors import AbortRunError, OrchestratorValidationError
 from orchestrator.policy import validate_code_bundle
 from orchestrator.roles import (
     build_execution_plan,
     build_research_brief,
     build_task_specification,
+    classify_task,
     generate_code_bundle,
     interpret_test_failure,
     judge_ab_candidates,
@@ -46,6 +48,7 @@ class OrchestratorEngine:
         self.max_identical_failures = MAX_IDENTICAL_FAILURES
         self.max_repair_attempts = MAX_REPAIR_ATTEMPTS
         self.sandbox_runner = SandboxRunnerClient()
+        self.docker_executor = _DockerExecutor()
 
     def _run_id(self, repo: str, issue_number: int | None) -> str:
         seed = f"{repo}:{issue_number}:{int(time.time() * 1000)}"
@@ -109,6 +112,13 @@ class OrchestratorEngine:
     ) -> tuple[bool, str, dict]:
         if should_use_sandbox_mode():
             return self.sandbox_runner.run_tests(
+                repo_path=repo_path,
+                repo_name=repo_name,
+                repo_analysis=repo_analysis,
+                strategy_policy=strategy_policy,
+            )
+        if should_use_docker_executor():
+            return self.docker_executor.run_tests_in_container(
                 repo_path=repo_path,
                 repo_name=repo_name,
                 repo_analysis=repo_analysis,
@@ -225,6 +235,38 @@ class OrchestratorEngine:
         )
         append_attempt(run_id=run_id, phase="ingest", attempt_index=1, status="ok", payload=task_spec.model_dump())
 
+        issue_title = str(issue.get("title") or "").strip()
+        issue_body = str(issue.get("body") or "").strip()
+        issue_labels = []
+        for lbl in issue.get("labels", []) or []:
+            name = str(lbl.get("name") if isinstance(lbl, dict) else lbl or "").strip()
+            if name:
+                issue_labels.append(name)
+
+        classification = classify_task(
+            issue_title=issue_title,
+            issue_body=issue_body,
+            labels=issue_labels,
+            repo_metadata=repo_analysis if isinstance(repo_analysis, dict) else None,
+        )
+        append_attempt(
+            run_id=run_id,
+            phase="classifier",
+            attempt_index=1,
+            status="ok",
+            payload=classification.model_dump(),
+        )
+        record_event(
+            "orchestrator_v2_classified",
+            repo=repo_name,
+            issue_number=issue.get("number"),
+            status="ok",
+            data=classification.model_dump(),
+        )
+
+        complexity_repair_map = {"low": 1, "medium": 2, "high": 3}
+        dynamic_max_repair = complexity_repair_map.get(classification.complexity, self.max_repair_attempts)
+
         likely_files = []
         if isinstance(repo_analysis, dict):
             for path in repo_analysis.get("files", []) or []:
@@ -256,7 +298,27 @@ class OrchestratorEngine:
             )
 
         add_artifact(run_id=run_id, name="task_spec.json", body=task_spec.model_dump_json(indent=2), sha256=sha256_text(task_spec.model_dump_json()))
+        add_artifact(run_id=run_id, name="classification.json", body=classification.model_dump_json(indent=2), sha256=sha256_text(classification.model_dump_json()))
         add_artifact(run_id=run_id, name="execution_plan.json", body=plan.model_dump_json(indent=2), sha256=sha256_text(plan.model_dump_json()))
+
+        if classification.complexity == "high":
+            plan_review = review_code_bundle(
+                task_spec=task_spec,
+                bundle=CodeBundle(files=[], delete_paths=[], rationale=plan.summary),
+                dependency_change_approved=dependency_change_approved,
+            )
+            append_attempt(
+                run_id=run_id,
+                phase="plan_review",
+                attempt_index=1,
+                status="failed" if plan_review.has_significant_errors else "ok",
+                payload=plan_review.model_dump(),
+            )
+            if plan_review.has_significant_errors:
+                raise AbortRunError(
+                    f"Plan review blocked high-complexity task: "
+                    f"{'; '.join(f.message for f in plan_review.findings if f.level == 'error')}"
+                )
 
         seen_failure_fingerprints = {}
         best_result = None
@@ -348,7 +410,7 @@ class OrchestratorEngine:
             failure_fp = fingerprint_text(str(primary.get("test_output") or primary["review"].model_dump_json()))
             seen_failure_fingerprints[failure_fp] = seen_failure_fingerprints.get(failure_fp, 0) + 1
 
-            for repair_idx in range(1, self.max_repair_attempts + 1):
+            for repair_idx in range(1, dynamic_max_repair + 1):
                 if seen_failure_fingerprints.get(failure_fp, 0) >= self.max_identical_failures:
                     raise AbortRunError(
                         f"Repeated failure fingerprint {failure_fp} reached threshold {self.max_identical_failures}."
@@ -374,7 +436,7 @@ class OrchestratorEngine:
                 seen_failure_fingerprints[failure_fp] = seen_failure_fingerprints.get(failure_fp, 0) + 1
 
         complexity = int(plan.complexity_score)
-        needs_redundancy = complexity > 8 and (
+        needs_redundancy = (complexity > 8 or classification.complexity == "high") and (
             (best_result and not best_result.get("tests_passed"))
             or (best_result and best_result["review"].has_significant_errors)
         )
@@ -456,10 +518,10 @@ class OrchestratorEngine:
         )
 
         artifacts = {
-            "run_id": run_id,
-            "used_redundancy": used_redundancy,
-            "complexity_score": plan.complexity_score,
-            "selected_patch_ops_count": len(chosen_patch_ops),
+            "run_id": str(run_id),
+            "used_redundancy": str(used_redundancy),
+            "complexity_score": str(plan.complexity_score),
+            "selected_patch_ops_count": str(len(chosen_patch_ops)),
         }
         finalize_run(
             run_id=run_id,
@@ -516,4 +578,28 @@ class OrchestratorEngine:
             plan=plan.model_dump(),
             used_redundancy=used_redundancy,
             run_id=run_id,
+        )
+
+    def run_chat_task(
+        self,
+        *,
+        repo_name: str,
+        repo_path: str,
+        message: str,
+        repo_analysis: dict,
+        strategy_policy: dict | None = None,
+    ) -> OrchestratorResult:
+        """Execute a chat-initiated coding task through the V2 pipeline."""
+        synthetic_issue = {
+            "title": message[:200],
+            "body": message,
+            "number": None,
+            "labels": [{"name": "chat-task"}],
+        }
+        return self.run_issue(
+            repo_name=repo_name,
+            issue=synthetic_issue,
+            repo_path=repo_path,
+            repo_analysis=repo_analysis,
+            strategy_policy=strategy_policy or {},
         )

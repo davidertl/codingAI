@@ -427,3 +427,62 @@ def get_policy_snapshot(force=False):
         "default_policy": copy.deepcopy(store["default_policy"]),
         "repos": repos,
     }
+
+
+# ── Budget Enforcement ──
+
+_DEFAULT_BUDGET = {
+    "max_cost_usd_per_run": float(os.getenv("BUDGET_MAX_COST_PER_RUN_USD", "5.0") or "5.0"),
+    "max_tokens_per_run": int(os.getenv("BUDGET_MAX_TOKENS_PER_RUN", "500000") or "500000"),
+    "max_cost_usd_daily": float(os.getenv("BUDGET_MAX_COST_DAILY_USD", "50.0") or "50.0"),
+    "warn_at_pct": float(os.getenv("BUDGET_WARN_AT_PCT", "0.8") or "0.8"),
+}
+
+
+def get_budget_limits(repo: str = "") -> dict:
+    policy = get_repo_policy(repo) if repo else {}
+    budget = policy.get("budget", {}) if isinstance(policy, dict) else {}
+    return {
+        "max_cost_usd_per_run": float(budget.get("max_cost_usd_per_run", _DEFAULT_BUDGET["max_cost_usd_per_run"])),
+        "max_tokens_per_run": int(budget.get("max_tokens_per_run", _DEFAULT_BUDGET["max_tokens_per_run"])),
+        "max_cost_usd_daily": float(budget.get("max_cost_usd_daily", _DEFAULT_BUDGET["max_cost_usd_daily"])),
+        "warn_at_pct": float(budget.get("warn_at_pct", _DEFAULT_BUDGET["warn_at_pct"])),
+    }
+
+
+class BudgetExceededError(Exception):
+    pass
+
+
+def check_budget(
+    *,
+    current_tokens: int = 0,
+    current_cost_usd: float = 0.0,
+    repo: str = "",
+) -> dict:
+    limits = get_budget_limits(repo)
+    status = "ok"
+    warnings = []
+
+    if limits["max_tokens_per_run"] and current_tokens >= limits["max_tokens_per_run"]:
+        status = "exceeded"
+        warnings.append(f"Token limit exceeded: {current_tokens}/{limits['max_tokens_per_run']}")
+    elif limits["max_tokens_per_run"] and current_tokens >= limits["max_tokens_per_run"] * limits["warn_at_pct"]:
+        status = "warning"
+        warnings.append(f"Token usage nearing limit: {current_tokens}/{limits['max_tokens_per_run']}")
+
+    if limits["max_cost_usd_per_run"] and current_cost_usd >= limits["max_cost_usd_per_run"]:
+        status = "exceeded"
+        warnings.append(f"Cost limit exceeded: ${current_cost_usd:.4f}/${limits['max_cost_usd_per_run']}")
+    elif limits["max_cost_usd_per_run"] and current_cost_usd >= limits["max_cost_usd_per_run"] * limits["warn_at_pct"]:
+        if status != "exceeded":
+            status = "warning"
+        warnings.append(f"Cost nearing limit: ${current_cost_usd:.4f}/${limits['max_cost_usd_per_run']}")
+
+    return {
+        "status": status,
+        "warnings": warnings,
+        "current_tokens": current_tokens,
+        "current_cost_usd": current_cost_usd,
+        "limits": limits,
+    }

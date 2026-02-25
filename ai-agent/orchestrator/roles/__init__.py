@@ -1,3 +1,4 @@
+from orchestrator.roles.classifier import classify_task
 from orchestrator.roles.ingest import build_task_specification
 from orchestrator.roles.planner import build_execution_plan
 from orchestrator.roles.researcher import build_research_brief
@@ -7,6 +8,7 @@ from orchestrator.roles.test_interpreter import interpret_test_failure
 from orchestrator.roles.judge import judge_ab_candidates
 
 __all__ = [
+    "classify_task",
     "build_task_specification",
     "build_execution_plan",
     "build_research_brief",

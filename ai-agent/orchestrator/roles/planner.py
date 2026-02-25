@@ -61,6 +61,22 @@ def build_execution_plan(task_spec: TaskSpecification, *, likely_files: list[str
             )
         )
 
+    hypothesis = ""
+    root_cause = ""
+    if task_spec.risk_level in {"high", "critical"}:
+        hypothesis = f"High-risk change: {task_spec.objective}. Requires careful review before merge."
+        root_cause = "Issue reported by user or automated detection."
+    elif any(kw in task_spec.objective.lower() for kw in ("bug", "fix", "error", "broken")):
+        hypothesis = f"Suspected defect in existing code related to: {task_spec.objective}"
+        root_cause = "Likely code defect; root cause to be confirmed by test analysis."
+
+    rollback_strategy = "Revert the branch to base_sha via git reset --hard if tests fail after commit."
+    if complexity > 7:
+        rollback_strategy = (
+            "Staged rollback: revert individual file changes before full branch reset. "
+            "Preserve worktree for post-mortem analysis."
+        )
+
     return ExecutionPlan(
         summary=f"Implement objective with deterministic, security-first orchestration: {task_spec.objective}",
         steps=steps,
@@ -75,4 +91,7 @@ def build_execution_plan(task_spec: TaskSpecification, *, likely_files: list[str
         ),
         complexity_score=complexity,
         routing_guidance=_routing_from_score(complexity),
+        hypothesis=hypothesis,
+        root_cause=root_cause,
+        rollback_strategy=rollback_strategy,
     )

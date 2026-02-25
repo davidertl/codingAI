@@ -6,19 +6,12 @@ import copy
 import hashlib
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
+
 from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
-from core.projects_store import get_project_push_gate_mode, get_project_labels, list_projects as _list_projects_store
-from core.memory_store import (
-    get_strategy_memory,
-    set_strategy_memory,
-    get_error_memory,
-    update_error_memory,
-    migrate_from_state as migrate_memory_from_state,
-    init_memory_tables,
-)
-from core.self_tasks import run_self_task_scan
+from core.projects_store import get_project_push_gate_mode
 from core.test_runner import analyze_repo, run_tests
 from orchestrator.engine import OrchestratorEngine
 from github.checks_manager import create_completed_check_run
@@ -49,22 +42,25 @@ from github.repo_manager import (
 from github.app_auth import get_installation_token
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
-from paths import STATE_FILE
+from paths import ENV_FILE, STATE_FILE
 
 AVAILABLE_REPOS = []
 TARGET_REPOS_ENV = os.getenv("TARGET_REPOS", "").strip()
 if TARGET_REPOS_ENV:
     AVAILABLE_REPOS = [r.strip() for r in TARGET_REPOS_ENV.split(",") if r.strip()]
 
-POLL_INTERVAL = 300
+_DEFAULT_POLL_INTERVAL = 300
+_WEBHOOK_ACTIVE_POLL_INTERVAL = 1800
+POLL_INTERVAL = _DEFAULT_POLL_INTERVAL
 REPORT_MARKER = "<!-- codingai-test-report -->"
 FAILURE_COMMENT_MARKER = "<!-- codingai-failure-report -->"
 RUN_ALL_REPOS = os.getenv("RUN_ALL_REPOS", "false").strip().lower() in {"1", "true", "yes", "on"}
-ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+ORCHESTRATOR_LEGACY_MODE = os.getenv("ORCHESTRATOR_LEGACY_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 PAUSE_WINDOW_SECONDS = int(os.getenv("CODINGAI_PAUSE_WINDOW_SECONDS", "10") or "10")
 MAX_PAUSE_SECONDS = int(os.getenv("CODINGAI_MAX_PAUSE_SECONDS", "300") or "300")
 
+load_dotenv(str(ENV_FILE))
 ORCHESTRATOR_V2 = OrchestratorEngine()
 
 
@@ -447,8 +443,6 @@ def _apply_strategy_memory_update(state, repo, test_report):
     memory_update = test_report.get("strategy_memory_update")
     if not isinstance(memory_update, dict):
         return
-    # Write to SQLite (primary) and keep state.json in sync for backwards compat
-    set_strategy_memory(repo, memory_update)
     state.setdefault("strategy_memory", {})[repo] = memory_update
 
 
@@ -456,8 +450,6 @@ def _apply_error_memory_update(state, repo, test_report):
     updates = test_report.get("error_memory_update")
     if not isinstance(updates, dict) or not updates:
         return
-    # Write to SQLite (primary) and keep state.json in sync for backwards compat
-    update_error_memory(repo, updates)
     repo_map = state.setdefault("strategy_error_memory", {}).setdefault(repo, {})
     repo_map.update(updates)
 
@@ -1132,8 +1124,8 @@ def process_issue(repo, issue, state, policy=None):
         default_branch = get_default_branch(repo)
         branch_sha = get_branch_sha(repo, branch)
         base_sha = branch_sha or get_branch_sha(repo, default_branch)
-        repo_strategy_memory = get_strategy_memory(repo) or state.get("strategy_memory", {}).get(repo, {})
-        repo_error_memory = get_error_memory(repo) or state.get("strategy_error_memory", {}).get(repo, {})
+        repo_strategy_memory = state.get("strategy_memory", {}).get(repo, {})
+        repo_error_memory = state.get("strategy_error_memory", {}).get(repo, {})
 
         if not base_sha:
             raise RuntimeError("Could not resolve base SHA for patch pipeline.")
@@ -1144,9 +1136,16 @@ def process_issue(repo, issue, state, policy=None):
         _checkout_local_branch_at_sha(repo_path, branch, base_sha)
 
         repo_analysis = analyze_repo(repo_path)
-        _v2_primary_handled = False
-        if ORCHESTRATOR_V2_ENABLED:
-            _set_pipeline_stage(state, repo, number, "orchestrator_v2", active_branch=branch)
+
+        confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
+        strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
+        strategy_quarantine_threshold = max(1, int(strategy_policy.get("quarantine_threshold", 3)))
+        strategy_quarantine_seconds = max(0, int(strategy_policy.get("quarantine_seconds", 12 * 60 * 60)))
+
+        if not ORCHESTRATOR_LEGACY_MODE:
+            # ── V2 DEFAULT PIPELINE ──
+            # V2 handles: classification, planning, coding, review, testing, repair
+            _set_pipeline_stage(state, repo, number, "orchestrating", active_branch=branch)
             v2_result = ORCHESTRATOR_V2.run_issue(
                 repo_name=repo,
                 issue=issue_for_llm,
@@ -1161,6 +1160,7 @@ def process_issue(repo, issue, state, policy=None):
             issue_state["orchestrator_v2_used_redundancy"] = bool(v2_result.used_redundancy)
             issue_state["orchestrator_v2_success_criteria"] = v2_result.run_outcome.success_criteria
             save_state(state)
+
             if v2_result.run_outcome.status != "success":
                 _register_failure(
                     state,
@@ -1172,44 +1172,96 @@ def process_issue(repo, issue, state, policy=None):
                     started_at=issue_started,
                 )
                 return
+
+            patch_ops = v2_result.patch_ops
+            if not patch_ops:
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"V2 produced no patch operations for issue #{number}.",
+                    "Orchestrator returned success but empty patch_ops.",
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+
+            patch_result = {
+                "patch_ops": patch_ops,
+                "confidence": 0.95,
+                "test_patch_ops_added": 0,
+                "test_patch_confidence": 0.0,
+                "test_patch_reason": "",
+                "test_patch_applied": False,
+                "test_patch_min_confidence": 0.0,
+                "reason": v2_result.run_outcome.summary,
+            }
+            success = True
+            output = v2_result.test_output
+            test_report = v2_result.test_report
+            attempts_count = int(v2_result.run_outcome.attempts_count or 0)
+
+            inc_counter("codingai_patch_ops_total", value=len(patch_ops), labels={"repo": repo})
             record_event(
-                "orchestrator_v2_passed",
+                "orchestrator_v2_completed",
                 repo=repo,
                 issue_number=number,
                 status="ok",
                 data={
                     "run_id": v2_result.run_id,
-                    "attempts": int(v2_result.run_outcome.attempts_count or 0),
+                    "attempts": attempts_count,
                     "used_redundancy": bool(v2_result.used_redundancy),
-                    "patch_ops": len(v2_result.patch_ops or []),
+                    "patch_ops": len(patch_ops),
                 },
             )
-            # V2 is the primary pipeline — use its patch_ops and test results directly
-            patch_ops = list(v2_result.patch_ops or [])
-            output = str(v2_result.test_output or "")
-            test_report = v2_result.test_report if isinstance(v2_result.test_report, dict) else {}
-            success = bool(test_report.get("success", True))
-            patch_result = {
-                "patch_ops": patch_ops,
-                "reason": str(v2_result.run_outcome.summary or "V2 orchestrator"),
-                "confidence": float(v2_result.run_outcome.success_criteria.get("confidence", 0.0) if v2_result.run_outcome.success_criteria else 0.0),
-                "test_patch_applied": False,
-                "test_patch_ops_added": 0,
-                "test_patch_confidence": 0.0,
-            }
-            attempts_count = int(v2_result.run_outcome.attempts_count or 1)
-            # Set strategy variables for shared dry-run/state block
-            confidence_threshold = float(strategy_policy.get("switch_confidence_threshold", 0.65))
-            strategy_max_attempts = max(1, int(strategy_policy.get("max_attempts", 3)))
-            strategy_quarantine_threshold = max(1, int(strategy_policy.get("quarantine_threshold", 3)))
-            strategy_quarantine_seconds = max(0, int(strategy_policy.get("quarantine_seconds", 12 * 60 * 60)))
-            # Apply strategy memory updates from V2 test report
-            _apply_strategy_memory_update(state, repo, test_report)
-            _apply_error_memory_update(state, repo, test_report)
-            _v2_primary_handled = True
 
-        if not _v2_primary_handled:
-            # ── V1 pipeline (legacy fallback) ─────────────────────────────
+            # V2 engine leaves patches applied in worktree; verify and re-apply if needed
+            if not _local_repo_has_changes(repo_path):
+                _checkout_local_branch_at_sha(repo_path, branch, base_sha)
+                _apply_patch_ops_locally(repo_path, patch_ops)
+
+            if not _local_repo_has_changes(repo_path):
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"V2 patch ops produced no effective file changes for issue #{number}.",
+                    patch_result.get("reason", ""),
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+
+            diff_text, diff_len = _capture_diff(repo_path)
+            pause_deadline = time.time() + PAUSE_WINDOW_SECONDS
+            _set_pipeline_stage(
+                state,
+                repo,
+                number,
+                "pause_window",
+                diff=diff_text,
+                diff_length=diff_len,
+                pause_deadline=int(pause_deadline),
+                paused=False,
+                pause_requested=False,
+                cancel_requested=False,
+            )
+            try:
+                _await_pause_window(repo, number, initial_deadline=pause_deadline)
+            except RuntimeError as cancel_err:
+                _register_failure(
+                    state,
+                    repo,
+                    number,
+                    f"Pipeline canceled for issue #{number}.",
+                    str(cancel_err),
+                    policy=policy,
+                    started_at=issue_started,
+                )
+                return
+
+        else:
+            # ── LEGACY PIPELINE (escape hatch via ORCHESTRATOR_LEGACY_MODE=true) ──
             _set_pipeline_stage(state, repo, number, "patching", active_branch=branch)
             patch_started = time.time()
             patch_result = propose_patch_ops(
@@ -1218,7 +1270,7 @@ def process_issue(repo, issue, state, policy=None):
                 issue=issue_for_llm,
                 repo_analysis=repo_analysis,
                 max_ops=int(patch_policy.get("max_patch_ops", 20)),
-                )
+            )
             patch_duration_ms = _elapsed_ms(patch_started)
             patch_ops = patch_result.get("patch_ops", [])
             patch_result["test_patch_ops_added"] = 0
@@ -1478,14 +1530,16 @@ def process_issue(repo, issue, state, policy=None):
                     started_at=issue_started,
                 )
                 return
-            _set_pipeline_stage(
-                state,
-                repo,
-                number,
-                "passed",
-                test_output_excerpt=str(output or "")[:2000],
-                attempts=attempts_count,
-            )
+
+        # ── SHARED: tests passed ──
+        _set_pipeline_stage(
+            state,
+            repo,
+            number,
+            "passed",
+            test_output_excerpt=str(output or "")[:2000],
+            attempts=attempts_count,
+        )
 
         if dry_run:
             issue_state["active_branch"] = branch
@@ -1707,9 +1761,7 @@ def _run_repo_cycle(repo, target_issue_number: int | None = None):
         )
     else:
         try:
-            _labels = get_project_labels(repo)
-            _labels_str = ",".join(_labels) if _labels else "ai-fix"
-            issues = get_ai_issues(repo, labels=_labels_str)
+            issues = get_ai_issues(repo)
         except Exception as e:
             cycle_status = "issues_fetch_failed"
             print(f"Failed to fetch issues for {repo}: {e}")
@@ -1792,16 +1844,6 @@ def get_available_repos():
             seen.add(name)
             aggregated.append(name)
 
-    # Filter out projects that are disabled in the projects DB
-    if aggregated:
-        try:
-            projects = _list_projects_store(aggregated)
-            disabled = {p["repo"] for p in projects if not p.get("enabled", True)}
-            if disabled:
-                aggregated = [r for r in aggregated if r not in disabled]
-        except Exception:
-            pass  # If DB unavailable, return all repos
-
     return aggregated
 
 
@@ -1830,10 +1872,22 @@ def get_policies_config(force=False):
     return load_policy_snapshot(force=force)
 
 
+def _effective_poll_interval() -> int:
+    try:
+        from github.webhook_handler import get_last_webhook_at, WEBHOOK_ENABLED
+        if WEBHOOK_ENABLED:
+            age = time.time() - get_last_webhook_at()
+            if age < 600:
+                return _WEBHOOK_ACTIVE_POLL_INTERVAL
+    except ImportError:
+        pass
+    return _DEFAULT_POLL_INTERVAL
+
+
 def loop(repo):
     while True:
         _run_repo_cycle(repo)
-        time.sleep(POLL_INTERVAL)
+        time.sleep(_effective_poll_interval())
 
 
 def loop_all(repos):
@@ -1841,11 +1895,11 @@ def loop_all(repos):
         for repo in repos:
             print(f"\n== Repo cycle: {repo} ==")
             _run_repo_cycle(repo)
-        time.sleep(POLL_INTERVAL)
+        time.sleep(_effective_poll_interval())
 
 
 def self_checks():
-    """Run lightweight self-checks (disk usage, job cleanup, self-task scan)."""
+    """Run lightweight self-checks (disk usage, job cleanup, self-task issues)."""
     disk = disk_usage_report()
     record_event(
         "self_check_disk",
@@ -1854,10 +1908,75 @@ def self_checks():
         data=disk,
     )
     cleanup_jobs()
+
+    _self_task_checks(disk)
+
+
+SELF_TASK_REPO = os.getenv("SELF_TASK_REPO", "").strip()
+SELF_TASK_ENABLED = os.getenv("SELF_TASK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _self_task_checks(disk: dict):
+    """Create GitHub issues on the CodingAI repo itself for detected problems."""
+    if not SELF_TASK_ENABLED or not SELF_TASK_REPO:
+        return
+    issues_to_create = []
+
+    if disk.get("warn"):
+        issues_to_create.append({
+            "title": "[Auto] Disk space warning on CodingAI host",
+            "body": (
+                f"Self-check detected low disk space.\n\n"
+                f"```json\n{json.dumps(disk, indent=2)}\n```\n\n"
+                "Please clean up workspaces or increase storage."
+            ),
+            "labels": ["self-task", "infrastructure"],
+        })
+
     try:
-        run_self_task_scan()
-    except Exception as exc:
-        record_event("self_task_scan_error", status="error", data={"error": str(exc)[:200]})
+        from llm.provider import get_token_usage
+        usage = get_token_usage()
+        total_cost = sum(
+            p.get("cost_usd", 0.0)
+            for p in usage.get("by_provider", {}).values()
+            if isinstance(p, dict)
+        )
+        daily_limit = float(os.getenv("BUDGET_MAX_COST_DAILY_USD", "50.0") or "50.0")
+        if daily_limit and total_cost > daily_limit * 0.9:
+            issues_to_create.append({
+                "title": "[Auto] LLM cost approaching daily budget limit",
+                "body": (
+                    f"Current session cost: ${total_cost:.4f} / ${daily_limit:.2f} daily limit.\n\n"
+                    "Consider reviewing model routing or adjusting budget limits."
+                ),
+                "labels": ["self-task", "budget"],
+            })
+    except Exception:
+        pass
+
+    for issue_data in issues_to_create:
+        try:
+            label_text = ""
+            if issue_data.get("labels"):
+                label_text = "\n\nLabels: " + ", ".join(issue_data["labels"])
+            create_issue(
+                SELF_TASK_REPO,
+                title=issue_data["title"],
+                body=issue_data["body"] + label_text,
+            )
+            record_event(
+                "self_task_issue_created",
+                repo=SELF_TASK_REPO,
+                status="ok",
+                data={"title": issue_data["title"]},
+            )
+        except Exception as e:
+            record_event(
+                "self_task_issue_error",
+                repo=SELF_TASK_REPO,
+                status="error",
+                data={"error": str(e)[:300]},
+            )
 
 
 if __name__ == "__main__":

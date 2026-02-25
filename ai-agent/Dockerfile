@@ -1,3 +1,12 @@
+# Stage 1: Build React frontend
+FROM node:20-slim AS frontend-builder
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Python backend
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -18,6 +27,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
 COPY ai-agent /app/ai-agent
+
+COPY --from=frontend-builder /build/dist /app/ai-agent/service/static/frontend
 
 RUN groupadd -r app && useradd -r -g app app && \
     chown -R app:app /app/ai-agent && \

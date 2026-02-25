@@ -22,6 +22,22 @@ def _normalize_path(path: str) -> str:
     return value
 
 
+class TaskClassification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: Literal["debug", "feature", "refactor", "analyze", "test_writing", "security"] = "feature"
+    complexity: Literal["low", "medium", "high"] = "medium"
+    required_skills: list[str] = Field(default_factory=list, max_length=200)
+    suggested_tools: list[str] = Field(default_factory=list, max_length=200)
+    risk_level: Literal["low", "medium", "high", "critical"] = "medium"
+    summary_prompt: str = Field(default="", max_length=5000)
+
+    @field_validator("required_skills", "suggested_tools")
+    @classmethod
+    def _strip_list_cls(cls, values: list[str]) -> list[str]:
+        return [s.strip() for s in (values or []) if str(s or "").strip()]
+
+
 class TaskSpecification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -66,6 +82,9 @@ class ExecutionPlan(BaseModel):
     risk_analysis: str = Field(default="", max_length=4000)
     complexity_score: int = Field(ge=0, le=10)
     routing_guidance: str = Field(default="", max_length=1000)
+    hypothesis: str = Field(default="", max_length=2000)
+    root_cause: str = Field(default="", max_length=2000)
+    rollback_strategy: str = Field(default="", max_length=2000)
 
     @field_validator("likely_affected_files")
     @classmethod

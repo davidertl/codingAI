@@ -16,7 +16,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.observability import (
-    EVENT_LOG_FILE,
     get_metrics_snapshot,
     inc_counter,
     read_recent_events,
@@ -27,16 +26,8 @@ from core.observability import (
 )
 from core.sandbox_runner_client import should_use_sandbox_mode
 from core.projects_store import list_projects as list_projects_store
-from core.projects_store import migrate_from_state as migrate_projects_from_state
 from core.projects_store import set_project_push_gate_mode as set_project_push_gate_mode_store
 from core.projects_store import set_project_enabled as set_project_enabled_store
-from core.projects_store import set_project_labels as set_project_labels_store
-from core.memory_store import (
-    init_memory_tables,
-    migrate_from_state as migrate_memory_from_state,
-    list_strategy_memories,
-    get_strategy_memory,
-)
 from core.rules_store import delete_rules as delete_rules_store
 from core.rules_store import effective_rules as effective_rules_store
 from core.rules_store import read_rules as read_rules_store
@@ -64,11 +55,10 @@ import main
 from github.ci_status import get_pr_ci_status
 from github.issue_manager import get_ai_issues
 from github.repo_manager import ensure_repo_mirror
-from llm.provider import ensure_llm_ready, get_llm_runtime_status, get_local_model_status, iter_llm_chunks, record_llm_request_result
+from llm.provider import ensure_llm_ready, get_llm_runtime_status, get_local_model_status
 import llm.provider as llm_provider_runtime
-from llm.chat_llm import chat_completion, chat_completion_stream, route_for_task
+from llm.chat_llm import chat_completion, route_for_task
 from paths import ENV_FILE, GITHUB_APP_PEM_FILE, setup_status
-from core.secret_store import secrets as secret_store
 from github.app_auth import get_installation_token
 from github.repo_manager import list_installation_repos
 
@@ -252,7 +242,14 @@ class WorkerManager:
 
 
 manager = WorkerManager()
-app = FastAPI(title="CodingAI Control Plane", version="experimental-0.23.0")
+app = FastAPI(title="CodingAI Control Plane", version="experimental-0.22.0")
+
+from service.auth import auth_middleware as _auth_middleware, API_AUTH_ENABLED as _API_AUTH_ENABLED
+from starlette.middleware.base import BaseHTTPMiddleware
+
+if _API_AUTH_ENABLED:
+    app.add_middleware(BaseHTTPMiddleware, dispatch=_auth_middleware)
+
 app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="ui-static")
 
 
@@ -329,18 +326,15 @@ def _repo_budget_status(repo: str) -> dict:
 
 
 def _read_env_entries() -> dict:
-    """Read current config entries.  Vault-first, then os.environ fallback."""
-    vault_secrets = secret_store.read_all()
-    if vault_secrets:
-        return vault_secrets
-    # Fallback: return os.environ snapshot of known config keys.
-    _KNOWN_KEYS = [
-        "GITHUB_OWNER", "GITHUB_APP_ID", "GITHUB_INSTALLATION_ID",
-        "LLM_PROVIDER", "LLM_PROVIDER_ORDER", "OPENAI_BASE_URL", "OPENAI_API_KEY",
-        "LOCAL_LLM_BASE_URL", "LOCAL_LLM_API_MODE", "LOCAL_LLM_PROFILE",
-        "LOCAL_LLM_MODEL", "LOCAL_LLM_API_KEY",
-    ]
-    return {k: os.environ[k] for k in _KNOWN_KEYS if k in os.environ}
+    existing = {}
+    if os.path.exists(ENV_FILE):
+        with open(ENV_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    existing[k] = v
+    return existing
 
 
 def _read_env_value(env_values: dict, key: str, default: str = "") -> str:
@@ -368,10 +362,23 @@ def health():
         "llm_telemetry_file": llm_runtime.get("telemetry_file"),
         "setup_required": not bool(setup.get("setup_complete")),
         "setup": setup,
-        "orchestrator_v2_enabled": bool(main.ORCHESTRATOR_V2_ENABLED),
+        "orchestrator_v2_enabled": not bool(main.ORCHESTRATOR_LEGACY_MODE),
         "runner_mode": "sandbox_api" if should_use_sandbox_mode() else "local_runner",
         "last_orchestrator_run": (last_orchestrator_run[0] if last_orchestrator_run else None),
     }
+
+
+@app.post("/auth/login")
+def auth_login(request_body: dict):
+    from service.auth import verify_credentials, create_token, API_AUTH_ENABLED
+    if not API_AUTH_ENABLED:
+        return {"token": "", "auth_enabled": False}
+    username = str(request_body.get("username") or "").strip()
+    password = str(request_body.get("password") or "").strip()
+    if not verify_credentials(username, password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_token(username)
+    return {"token": token, "auth_enabled": True}
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
@@ -381,14 +388,7 @@ def metrics():
 
 @app.get("/setup/status")
 def setup_status_api():
-    result = setup_status()
-    result["vault"] = secret_store.health()
-    return result
-
-
-@app.get("/vault/health")
-def vault_health_api():
-    return secret_store.health()
+    return setup_status()
 
 
 @app.get("/setup/values")
@@ -414,8 +414,6 @@ def setup_values_api():
     }
     if local_model_error:
         payload["local_model_error"] = local_model_error
-    payload["vault_enabled"] = secret_store.enabled
-    payload["vault_connected"] = secret_store.is_available()
     return payload
 
 
@@ -494,11 +492,15 @@ def _normalize_http_base_url(value: str, *, field_name: str) -> str:
 
 
 def _write_env_entries(entries: dict):
-    """Persist secret/config entries via Vault (or in-memory when Vault disabled)."""
+    existing = _read_env_entries()
     sanitized = {}
+    for key, value in existing.items():
+        sanitized[_sanitize_env_key(key)] = _sanitize_env_value(value)
     for key, value in entries.items():
         sanitized[_sanitize_env_key(key)] = _sanitize_env_value(value)
-    secret_store.write(sanitized)
+    lines = [f"{k}={v}\n" for k, v in sanitized.items()]
+    with open(ENV_FILE, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
 
 class ThreadCreatePayload(BaseModel):
@@ -519,6 +521,13 @@ class SnippetAttachmentPayload(BaseModel):
     start_line: int = Field(default=1, ge=1)
     end_line: int = Field(default=120, ge=1)
     message_id: int | None = Field(default=None, ge=1)
+
+
+class SnippetAttachmentPayload(BaseModel):
+    repo: str = ""
+    path: str = ""
+    start_line: int = 0
+    end_line: int = 0
 
 
 class MessageCreatePayload(BaseModel):
@@ -789,9 +798,9 @@ def setup_github(
     app_id: str = Form(...),
     installation_id: str = Form(...),
 ):
-    owner = owner.strip()[:200]
-    app_id = app_id.strip()[:200]
-    installation_id = installation_id.strip()[:200]
+    owner = owner.strip()
+    app_id = app_id.strip()
+    installation_id = installation_id.strip()
     if not (owner and app_id and installation_id):
         raise HTTPException(status_code=400, detail="owner, app_id, installation_id are required")
     updates = {
@@ -804,8 +813,8 @@ def setup_github(
         _sync_process_env(updates)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except (OSError, RuntimeError) as e:
-        raise HTTPException(status_code=500, detail=f"Unable to save secrets: {e}") from e
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Unable to write env file: {e.strerror or str(e)}") from e
     record_event(
         "setup_github_updated",
         status="ok",
@@ -831,8 +840,8 @@ def setup_github_clear():
         manager.stop_all()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except (OSError, RuntimeError) as e:
-        raise HTTPException(status_code=500, detail=f"Unable to save secrets: {e}") from e
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Unable to write env file: {e.strerror or str(e)}") from e
 
     record_event(
         "setup_github_cleared",
@@ -912,8 +921,8 @@ def setup_llm(
         _refresh_llm_runtime()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except (OSError, RuntimeError) as e:
-        raise HTTPException(status_code=500, detail=f"Unable to save secrets: {e}") from e
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Unable to write env file: {e.strerror or str(e)}") from e
 
     record_event(
         "setup_llm_updated",
@@ -946,80 +955,37 @@ async def setup_pem(pem: UploadFile = File(...)):
     if b"BEGIN" not in content or b"PRIVATE KEY" not in content:
         raise HTTPException(status_code=400, detail="PEM format not recognized")
     overwrite_allowed = os.getenv("SETUP_PEM_OVERWRITE", "true").strip().lower() in _TRUTHY
-    pem_exists = GITHUB_APP_PEM_FILE.exists() or secret_store.has_pem()
+    pem_exists = GITHUB_APP_PEM_FILE.exists()
     if pem_exists and not overwrite_allowed:
         raise HTTPException(
             status_code=409,
-            detail="PEM already exists. Overwrite blocked by SETUP_PEM_OVERWRITE=false.",
+            detail=(
+                f"PEM already exists at {GITHUB_APP_PEM_FILE}. "
+                "Overwrite blocked by SETUP_PEM_OVERWRITE=false."
+            ),
         )
-    stored_in = "vault" if secret_store.enabled else "file"
     try:
-        if secret_store.enabled:
-            secret_store.write_pem(content)
-        else:
-            os.makedirs(GITHUB_APP_PEM_FILE.parent, exist_ok=True)
-            with open(GITHUB_APP_PEM_FILE, "wb") as f:
-                f.write(content)
-            os.chmod(GITHUB_APP_PEM_FILE, 0o600)
-    except (OSError, RuntimeError) as e:
+        os.makedirs(GITHUB_APP_PEM_FILE.parent, exist_ok=True)
+        with open(GITHUB_APP_PEM_FILE, "wb") as f:
+            f.write(content)
+        os.chmod(GITHUB_APP_PEM_FILE, 0o600)
+    except OSError as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unable to save PEM ({stored_in}): {e}",
+            detail=f"Unable to save PEM at {GITHUB_APP_PEM_FILE}: {e.strerror or str(e)}",
         ) from e
     fingerprint = hashlib.sha256(content).hexdigest()
     record_event(
         "setup_pem_uploaded",
         status="ok",
         data={
-            "stored_in": stored_in,
+            "pem_path": str(GITHUB_APP_PEM_FILE),
             "pem_size": len(content),
             "fingerprint_prefix": fingerprint[:16],
             "replaced_existing": pem_exists,
         },
     )
     return {"status": "ok", "fingerprint": fingerprint, "setup": setup_status()}
-
-
-_SETUP_AUDIT_EVENT_PREFIXES = (
-    "setup_github_",
-    "setup_llm_",
-    "setup_pem_",
-    "setup_github_cleared",
-    "rules_updated",
-    "rules_deleted",
-    "prompt_safety_block",
-    "project_add",
-    "project_remove",
-    "project_update",
-)
-
-
-@app.get("/setup/audit")
-def setup_audit(limit: int = 200):
-    """Return the most recent setup-related audit events from the event log."""
-    limit = max(1, min(limit, 2000))
-    events: list[dict] = []
-    log_path = EVENT_LOG_FILE
-    if not os.path.isfile(log_path):
-        return {"events": [], "total": 0}
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                ev = entry.get("event", "")
-                if any(ev.startswith(p) for p in _SETUP_AUDIT_EVENT_PREFIXES) or ev in _SETUP_AUDIT_EVENT_PREFIXES:
-                    events.append(entry)
-    except OSError:
-        return {"events": [], "total": 0, "error": "unable to read event log"}
-    # Return most recent entries (tail)
-    tail = events[-limit:] if len(events) > limit else events
-    return {"events": list(reversed(tail)), "total": len(events)}
 
 
 def _project_repo_candidates():
@@ -1057,10 +1023,8 @@ def _project_rows(repos: list[str]):
     state = main.load_state()
     state_enabled_repos = state.get("projects_enabled") if isinstance(state.get("projects_enabled"), list) else None
     defaults = _project_default_push_gate_modes(repos)
-    migrate_projects_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
-    # Migrate strategy memory from state.json → SQLite (idempotent)
-    init_memory_tables()
-    migrate_memory_from_state(state)
+    from core.projects_store import migrate_from_state as _migrate_from_state
+    _migrate_from_state(repo_names=repos, state=state, default_push_gate_by_repo=defaults)
     return list_projects_store(repos, state_enabled_repos=state_enabled_repos, default_push_gate_by_repo=defaults)
 
 
@@ -1132,44 +1096,6 @@ def set_project_push_gate(repo: str, mode: str):
     )
     return {"repo": repo, "push_gate_mode": normalized}
 
-
-class ProjectLabelsPayload(BaseModel):
-    labels: list[str] = Field(default_factory=lambda: ["ai-fix"])
-
-
-@app.put("/projects/{repo}/labels")
-def set_project_labels(repo: str, payload: ProjectLabelsPayload):
-    repos, _source, _error = _project_repo_candidates()
-    _validate_project_repo(repo, repos)
-    labels = [str(l).strip() for l in payload.labels if str(l).strip()]
-    if not labels:
-        labels = ["ai-fix"]
-    saved = set_project_labels_store(repo, labels)
-    record_event(
-        "project_labels_updated", repo=repo, status="ok",
-        data={"labels": saved},
-    )
-    return {"repo": repo, "labels": saved}
-
-
-# ── Strategy Memory endpoints ──────────────────────────────────────
-
-@app.get("/strategy-memory")
-def strategy_memory_list():
-    """Return all strategy memory rows for diagnostics / UI."""
-    return {"time_utc": _utc_now_iso(), "memories": list_strategy_memories()}
-
-
-@app.get("/strategy-memory/{repo:path}")
-def strategy_memory_get(repo: str):
-    """Return strategy memory for a single repo."""
-    repo = repo.strip()
-    if not repo:
-        raise HTTPException(status_code=400, detail="repo is required")
-    return {"time_utc": _utc_now_iso(), "repo": repo, "memory": get_strategy_memory(repo)}
-
-
-# ── Rules helpers ──────────────────────────────────────────────────
 
 def _rules_event_data(*, scope: str, rules_markdown: str, repo: str | None = None) -> dict:
     body = str(rules_markdown or "")
@@ -1523,11 +1449,9 @@ def chat_thread_send_message(thread_id: int, payload: MessageCreatePayload):
 
 @app.get("/chat/messages/{message_id}/stream")
 async def chat_stream_message(request: Request, message_id: int, last_event_id: int | None = Query(default=None)):
-    assistant = get_chat_message(int(message_id))
-    if not assistant:
+    message = _generate_assistant_for_message(int(message_id))
+    if not message:
         raise HTTPException(status_code=404, detail=f"Unknown message id {message_id}")
-    if str(assistant.get("role")) != "assistant":
-        raise HTTPException(status_code=400, detail="stream is only supported for assistant messages")
 
     header_last_id = request.headers.get("last-event-id")
     resume_from = int(last_event_id or 0)
@@ -1537,169 +1461,39 @@ async def chat_stream_message(request: Request, message_id: int, last_event_id: 
         except Exception:
             resume_from = 0
 
-    _sse_headers = {
+    chunks = _stream_chunks(str(message.get("content", "")), chunk_chars=CHAT_STREAM_CHUNK_CHARS)
+    done_event_id = len(chunks) + 1
+
+    async def _event_stream():
+        start_from = max(1, resume_from + 1)
+        for idx, chunk in enumerate(chunks, start=1):
+            if idx < start_from:
+                continue
+            payload = {
+                "message_id": int(message_id),
+                "chunk_index": idx,
+                "chunk_total": len(chunks),
+                "delta": chunk,
+                "done": False,
+            }
+            yield f"id: {idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.012)
+        if done_event_id >= start_from:
+            done_payload = {
+                "message_id": int(message_id),
+                "done": True,
+                "status": str(message.get("status", "")),
+            }
+            yield f"id: {done_event_id}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
+
+    headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
-
-    # ---- Already-completed message: replay stored content as fake chunks ----
-    if str(assistant.get("status")) == "completed" and str(assistant.get("content", "")).strip():
-        chunks = _stream_chunks(str(assistant.get("content", "")), chunk_chars=CHAT_STREAM_CHUNK_CHARS)
-        done_event_id = len(chunks) + 1
-
-        async def _replay_stream():
-            start_from = max(1, resume_from + 1)
-            for idx, chunk in enumerate(chunks, start=1):
-                if idx < start_from:
-                    continue
-                payload = {
-                    "message_id": int(message_id),
-                    "chunk_index": idx,
-                    "chunk_total": len(chunks),
-                    "delta": chunk,
-                    "done": False,
-                }
-                yield f"id: {idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
-                if await request.is_disconnected():
-                    return
-                await asyncio.sleep(0.012)
-            if done_event_id >= start_from:
-                done_payload = {
-                    "message_id": int(message_id),
-                    "done": True,
-                    "status": "completed",
-                }
-                yield f"id: {done_event_id}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
-
-        return StreamingResponse(_replay_stream(), media_type="text/event-stream", headers=_sse_headers)
-
-    # ---- Pending message: attempt true LLM streaming ----
-    thread = _chat_thread_or_404(int(assistant["thread_id"]))
-    meta = dict(assistant.get("meta") or {})
-    route_task = _normalize_chat_task_type(
-        meta.get("route_task_type") or assistant.get("task_type") or thread.get("task_type"),
-    )
-    prompt_messages = _thread_messages_for_prompt(
-        int(thread["id"]), include_until_message_id=int(assistant["id"]) - 1,
-    )
-
-    stream_result = chat_completion_stream(
-        repo=str(thread["repo"]), messages=prompt_messages, task_type=route_task,
-    )
-
-    # -- Streaming init failed → emit single done-with-error event ----
-    if not stream_result.get("ok"):
-        err = str(stream_result.get("error") or "chat_failed")
-        err_text = str(stream_result.get("text") or f"Assistant generation failed: {err}")
-        update_chat_message(
-            int(message_id),
-            content=err_text,
-            status="failed",
-            model=str(stream_result.get("model") or ""),
-            meta={**meta, "provider": stream_result.get("provider"), "error": err,
-                  "generated_at": int(time.time())},
-        )
-        error_payload = {"message_id": int(message_id), "done": True, "status": "failed", "error": err}
-
-        async def _error_stream():
-            yield f"id: 1\nevent: done\ndata: {json.dumps(error_payload, ensure_ascii=True)}\n\n"
-
-        return StreamingResponse(_error_stream(), media_type="text/event-stream", headers=_sse_headers)
-
-    # -- Non-streaming fallback (endpoint doesn't support stream) → save & replay --
-    if "text" in stream_result and "response" not in stream_result:
-        text = str(stream_result.get("text") or "")
-        update_chat_message(
-            int(message_id),
-            content=text,
-            status="completed",
-            model=str(stream_result.get("model") or ""),
-            meta={**meta, "provider": stream_result.get("provider"),
-                  "model": stream_result.get("model"),
-                  "generated_at": int(time.time())},
-        )
-        fb_chunks = _stream_chunks(text, chunk_chars=CHAT_STREAM_CHUNK_CHARS)
-        fb_done_id = len(fb_chunks) + 1
-
-        async def _fallback_stream():
-            for idx, chunk in enumerate(fb_chunks, start=1):
-                payload = {
-                    "message_id": int(message_id),
-                    "chunk_index": idx,
-                    "chunk_total": len(fb_chunks),
-                    "delta": chunk,
-                    "done": False,
-                }
-                yield f"id: {idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
-                if await request.is_disconnected():
-                    return
-                await asyncio.sleep(0.012)
-            done_payload = {"message_id": int(message_id), "done": True, "status": "completed"}
-            yield f"id: {fb_done_id}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
-
-        return StreamingResponse(_fallback_stream(), media_type="text/event-stream", headers=_sse_headers)
-
-    # ---- True LLM streaming ----
-    llm_response = stream_result["response"]
-    llm_model = str(stream_result.get("model") or "")
-    llm_provider = stream_result.get("provider")
-
-    async def _live_stream():
-        loop = asyncio.get_event_loop()
-        accumulated: list[str] = []
-        chunk_idx = 0
-        gen = iter_llm_chunks(llm_response)
-        sentinel = object()
-
-        while True:
-            if await request.is_disconnected():
-                break
-            # Run blocking next() in thread pool so we don't block the event loop
-            delta = await loop.run_in_executor(None, next, gen, sentinel)
-            if delta is sentinel:
-                break
-            chunk_idx += 1
-            accumulated.append(delta)
-            payload = {
-                "message_id": int(message_id),
-                "chunk_index": chunk_idx,
-                "delta": delta,
-                "done": False,
-            }
-            yield f"id: {chunk_idx}\nevent: chunk\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
-
-        full_text = "".join(accumulated).strip()
-        if full_text:
-            update_chat_message(
-                int(message_id),
-                content=full_text,
-                status="completed",
-                model=llm_model,
-                meta={**meta, "provider": llm_provider, "model": llm_model,
-                      "generated_at": int(time.time()), "streamed": True},
-            )
-            record_llm_request_result(
-                provider=llm_provider or "", operation="chat_stream", ok=True,
-            )
-            done_payload = {"message_id": int(message_id), "done": True, "status": "completed"}
-        else:
-            update_chat_message(
-                int(message_id),
-                content="Assistant generation failed: empty response stream",
-                status="failed",
-                model=llm_model,
-                meta={**meta, "provider": llm_provider, "error": "empty_stream",
-                      "generated_at": int(time.time())},
-            )
-            record_llm_request_result(
-                provider=llm_provider or "", operation="chat_stream", ok=False, error="empty_stream",
-            )
-            done_payload = {"message_id": int(message_id), "done": True, "status": "failed", "error": "empty_stream"}
-
-        yield f"id: {chunk_idx + 1}\nevent: done\ndata: {json.dumps(done_payload, ensure_ascii=True)}\n\n"
-
-    return StreamingResponse(_live_stream(), media_type="text/event-stream", headers=_sse_headers)
+    return StreamingResponse(_event_stream(), media_type="text/event-stream", headers=headers)
 
 
 @app.get("/chat/files/{repo}/tree")
@@ -2197,130 +1991,7 @@ def _live_snapshot(selected_repo: str | None = None) -> dict:
         "setup_values": setup_values_payload,
         "summary": summary_payload,
         "rules": _live_rules_snapshot(resolved_repo),
-        "orchestration_runs": list_orchestrator_runs(repo=resolved_repo, limit=20),
     }
-
-
-async def _ws_handle_chat_send(websocket: WebSocket, payload: dict):
-    """Handle a chat_send message over the live WebSocket — streams LLM response back."""
-    thread_id = payload.get("thread_id")
-    content = str(payload.get("content") or "").strip()
-    task_type_raw = str(payload.get("task_type") or "chat").strip()
-    nonce = payload.get("nonce", "")  # client-provided correlation id
-
-    if not thread_id or not content:
-        await websocket.send_json({
-            "type": "chat_error", "nonce": nonce,
-            "error": "thread_id and content are required",
-            "time_utc": _utc_now_iso(),
-        })
-        return
-
-    try:
-        thread = get_chat_thread(int(thread_id))
-        if not thread:
-            raise ValueError(f"Unknown thread {thread_id}")
-
-        route = route_for_task(task_type_raw or thread.get("task_type"))
-        route_task_type = str(route.get("task_type", "chat"))
-
-        user_message = create_chat_message(
-            thread_id=int(thread_id), role="user", content=content,
-            status="completed", task_type=route_task_type, model="", meta={"source": "ws"},
-        )
-        assistant_message = create_chat_message(
-            thread_id=int(thread_id), role="assistant", content="", status="pending",
-            task_type=route_task_type, model=str(route.get("model") or ""),
-            meta={"route_task_type": route_task_type, "route_model": str(route.get("model") or ""),
-                  "queued_at": int(time.time())},
-        )
-        assistant_id = int(assistant_message["id"])
-        await websocket.send_json({
-            "type": "chat_ack", "nonce": nonce, "thread_id": int(thread_id),
-            "user_message": user_message, "assistant_message_id": assistant_id,
-            "time_utc": _utc_now_iso(),
-        })
-
-        prompt_messages = _thread_messages_for_prompt(int(thread_id), include_until_message_id=assistant_id - 1)
-        meta = dict(assistant_message.get("meta") or {})
-
-        stream_result = chat_completion_stream(
-            repo=str(thread.get("repo") or ""), messages=prompt_messages, task_type=route_task_type,
-        )
-
-        if not stream_result.get("ok"):
-            err = str(stream_result.get("error") or "chat_failed")
-            err_text = str(stream_result.get("text") or f"Assistant generation failed: {err}")
-            update_chat_message(assistant_id, content=err_text, status="failed",
-                                model=str(stream_result.get("model") or ""),
-                                meta={**meta, "provider": stream_result.get("provider"), "error": err,
-                                      "generated_at": int(time.time())})
-            await websocket.send_json({
-                "type": "chat_done", "nonce": nonce, "message_id": assistant_id,
-                "status": "failed", "error": err, "time_utc": _utc_now_iso(),
-            })
-            return
-
-        # Non-streaming fallback
-        if "text" in stream_result and "response" not in stream_result:
-            text = str(stream_result.get("text") or "")
-            update_chat_message(assistant_id, content=text, status="completed",
-                                model=str(stream_result.get("model") or ""),
-                                meta={**meta, "provider": stream_result.get("provider"),
-                                      "model": stream_result.get("model"), "generated_at": int(time.time())})
-            await websocket.send_json({
-                "type": "chat_chunk", "nonce": nonce, "message_id": assistant_id,
-                "delta": text, "chunk_index": 1, "done": False, "time_utc": _utc_now_iso(),
-            })
-            await websocket.send_json({
-                "type": "chat_done", "nonce": nonce, "message_id": assistant_id,
-                "status": "completed", "time_utc": _utc_now_iso(),
-            })
-            return
-
-        # True LLM streaming
-        llm_response = stream_result["response"]
-        llm_model = str(stream_result.get("model") or "")
-        llm_provider = stream_result.get("provider")
-        loop = asyncio.get_event_loop()
-        accumulated: list[str] = []
-        chunk_idx = 0
-        gen = iter_llm_chunks(llm_response)
-        sentinel = object()
-
-        while True:
-            delta = await loop.run_in_executor(None, next, gen, sentinel)
-            if delta is sentinel:
-                break
-            chunk_idx += 1
-            accumulated.append(delta)
-            await websocket.send_json({
-                "type": "chat_chunk", "nonce": nonce, "message_id": assistant_id,
-                "delta": delta, "chunk_index": chunk_idx, "done": False,
-                "time_utc": _utc_now_iso(),
-            })
-
-        full_text = "".join(accumulated).strip()
-        status = "completed" if full_text else "failed"
-        update_chat_message(assistant_id, content=full_text or "Empty response",
-                            status=status, model=llm_model,
-                            meta={**meta, "provider": llm_provider, "model": llm_model,
-                                  "generated_at": int(time.time()), "streamed": True})
-        if full_text:
-            record_llm_request_result(provider=llm_provider or "", operation="chat_stream_ws", ok=True)
-        else:
-            record_llm_request_result(provider=llm_provider or "", operation="chat_stream_ws", ok=False, error="empty_stream")
-
-        await websocket.send_json({
-            "type": "chat_done", "nonce": nonce, "message_id": assistant_id,
-            "status": status, "time_utc": _utc_now_iso(),
-        })
-
-    except Exception as e:
-        await websocket.send_json({
-            "type": "chat_error", "nonce": nonce,
-            "error": str(e)[:500], "time_utc": _utc_now_iso(),
-        })
 
 
 @app.websocket("/ws/live")
@@ -2365,10 +2036,6 @@ async def ws_live(websocket: WebSocket):
                 selected_repo = candidate or None
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong", "time_utc": _utc_now_iso()})
-            elif msg_type == "chat_send":
-                # ── WebSocket chat streaming ────────────────────────
-                await _ws_handle_chat_send(websocket, payload)
-                continue  # skip snapshot push after chat stream
 
         try:
             snapshot = _live_snapshot(selected_repo)
@@ -2463,62 +2130,232 @@ def stop_repo(repo: str):
     }
 
 
-# ── Self-tasks ─────────────────────────────────────────────────────
+# ── GitHub Webhook Endpoint ──
 
-from core.self_tasks import (
-    list_self_tasks as _list_self_tasks,
-    get_self_task as _get_self_task,
-    snooze_self_task as _snooze_self_task,
-    dismiss_self_task as _dismiss_self_task,
-    run_self_task_scan as _run_self_task_scan,
+from github.webhook_handler import (
+    handle_webhook as _handle_webhook,
+    verify_webhook_signature as _verify_webhook_sig,
+    WEBHOOK_ENABLED as _WEBHOOK_ENABLED,
 )
 
 
-@app.get("/self-tasks")
-def self_tasks_list(status: str | None = Query(default=None), limit: int = Query(default=200)):
-    tasks = _list_self_tasks(status=status, limit=min(int(limit), 2000))
-    return {"time_utc": _utc_now_iso(), "count": len(tasks), "tasks": tasks}
+@app.post("/github/webhook")
+async def github_webhook(request: Request):
+    if not _WEBHOOK_ENABLED:
+        raise HTTPException(status_code=404, detail="Webhook receiver is disabled")
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    body = await request.body()
+    if not _verify_webhook_sig(body, signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    event_type = request.headers.get("X-GitHub-Event", "")
+    delivery_id = request.headers.get("X-GitHub-Delivery", "")
+    payload = json.loads(body)
+    await _handle_webhook(event_type, payload, delivery_id=delivery_id)
+    record_event("webhook_endpoint_ok", status="ok", data={"event": event_type})
+    return {"status": "ok", "event": event_type}
 
 
-@app.get("/self-tasks/{task_id}")
-def self_tasks_get(task_id: int):
-    task = _get_self_task(int(task_id))
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Self-task {task_id} not found")
-    return {"time_utc": _utc_now_iso(), "task": task}
+# ── Model Routing Endpoints ──
+
+from llm.model_router import (
+    get_routing_table as _get_routing_table,
+    set_runtime_routing as _set_runtime_routing,
+    get_runtime_routing as _get_runtime_routing,
+)
 
 
-@app.post("/self-tasks/{task_id}/snooze")
-def self_tasks_snooze(task_id: int, seconds: int = Query(default=86400)):
-    task = _snooze_self_task(int(task_id), seconds=int(seconds))
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Self-task {task_id} not found")
-    return {"time_utc": _utc_now_iso(), "task": task}
+@app.get("/model-routing")
+def get_model_routing():
+    return {"routing": _get_routing_table()}
 
 
-@app.post("/self-tasks/{task_id}/dismiss")
-def self_tasks_dismiss(task_id: int):
-    task = _dismiss_self_task(int(task_id))
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Self-task {task_id} not found")
-    return {"time_utc": _utc_now_iso(), "task": task}
+@app.put("/model-routing")
+def put_model_routing(request_body: dict):
+    routing = request_body.get("routing", {})
+    if not isinstance(routing, dict):
+        raise HTTPException(status_code=400, detail="routing must be an object")
+    _set_runtime_routing(routing)
+    record_event("model_routing_api_update", status="ok", data={"roles": list(routing.keys())})
+    return {"status": "ok", "routing": _get_routing_table()}
 
 
-@app.post("/self-tasks/scan")
-def self_tasks_scan():
-    result = _run_self_task_scan()
-    return {"time_utc": _utc_now_iso(), **result}
+@app.get("/models/available")
+def list_available_models():
+    models = []
+    try:
+        import requests as _req
+        local_url = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
+        resp = _req.get(f"{local_url}/api/tags", timeout=5)
+        if resp.status_code == 200:
+            for m in resp.json().get("models", []):
+                models.append({
+                    "name": m.get("name", ""),
+                    "provider": "local",
+                    "size": m.get("size", 0),
+                })
+    except Exception:
+        pass
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        for name in ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]:
+            models.append({"name": name, "provider": "openai", "size": 0})
+    return {"models": models}
 
 
-@app.on_event("startup")
-def _startup_vault_sync():
-    """On boot, load Vault secrets into os.environ so all modules see them."""
-    if secret_store.enabled:
-        try:
-            count = secret_store.sync_to_environ()
-            record_event("vault_startup_sync", status="ok", data={"keys_synced": count})
-        except Exception as exc:
-            record_event("vault_startup_sync", status="error", data={"error": str(exc)[:200]})
+# ── Chat Task Endpoints ──
+
+from core.chat_executor import (
+    create_chat_task as _create_chat_task,
+    get_chat_task as _get_chat_task,
+    cancel_chat_task as _cancel_chat_task,
+    list_chat_tasks as _list_chat_tasks,
+    ChatTaskResult as _ChatTaskResult,
+)
+
+
+@app.post("/chat/message")
+async def chat_message(request_body: dict):
+    repo = str(request_body.get("repo") or "").strip()
+    message = str(request_body.get("message") or "").strip()
+    history = request_body.get("history", [])
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    from llm.chat_llm import chat_with_llm
+    reply = chat_with_llm(
+        repo=repo,
+        message=message,
+        history=history if isinstance(history, list) else [],
+        task_type="chat",
+    )
+    record_event("chat_message", repo=repo, status="ok")
+    return {"reply": reply}
+
+
+@app.post("/chat/task")
+async def chat_create_task(request_body: dict):
+    repo = str(request_body.get("repo") or "").strip()
+    message = str(request_body.get("message") or "").strip()
+    if not repo or not message:
+        raise HTTPException(status_code=400, detail="repo and message are required")
+
+    repos_list = main.get_available_repos()
+    if repo not in repos_list:
+        raise HTTPException(status_code=404, detail=f"Unknown repo: {repo}")
+
+    repo_path = os.path.join(os.getenv("WORKSPACES_DIR", "workspaces"), repo.replace("/", "_"))
+    ctx = _create_chat_task(
+        repo=repo,
+        message=message,
+        history=request_body.get("history", []),
+        repo_path=repo_path,
+    )
+    record_event("chat_task_created", repo=repo, status="ok", data={"task_id": ctx.task_id})
+    return {
+        "task_id": ctx.task_id,
+        "status": ctx.status,
+        "plan": ctx.plan,
+        "classification": ctx.classification,
+    }
+
+
+@app.get("/chat/task/{task_id}")
+async def chat_get_task(task_id: str):
+    ctx = _get_chat_task(task_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {
+        "task_id": ctx.task_id,
+        "status": ctx.status,
+        "plan": ctx.plan,
+        "classification": ctx.classification,
+        "repo": ctx.repo,
+    }
+
+
+@app.post("/chat/task/{task_id}/confirm")
+async def chat_confirm_task(task_id: str):
+    ctx = _get_chat_task(task_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if ctx.status != "plan_ready":
+        raise HTTPException(status_code=409, detail=f"Task status is '{ctx.status}', expected 'plan_ready'")
+    ctx.status = "executing"
+    record_event("chat_task_confirmed", repo=ctx.repo, status="ok", data={"task_id": task_id})
+    return {"task_id": task_id, "status": "executing"}
+
+
+@app.post("/chat/task/{task_id}/cancel")
+async def chat_cancel_task(task_id: str):
+    if not _cancel_chat_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"task_id": task_id, "status": "cancelled"}
+
+
+@app.get("/chat/tasks")
+async def chat_list_tasks():
+    tasks = _list_chat_tasks()
+    return {
+        "tasks": [
+            {"task_id": t.task_id, "status": t.status, "repo": t.repo, "created_at": t.created_at}
+            for t in tasks
+        ]
+    }
+
+
+# ── Docker Container Management ──
+
+from core.docker_executor import DockerExecutor as _DockerExec
+
+
+@app.get("/workers/containers")
+def list_worker_containers():
+    executor = _DockerExec()
+    return {"containers": executor.list_containers()}
+
+
+@app.post("/workers/containers/cleanup")
+def cleanup_worker_containers():
+    executor = _DockerExec()
+    removed = executor.cleanup_stale_containers()
+    return {"removed": removed}
+
+
+# ── Usage / Budget Endpoints ──
+
+from llm.provider import get_token_usage as _get_token_usage, reset_token_usage as _reset_token_usage
+from core.policy import get_budget_limits as _get_budget_limits, check_budget as _check_budget
+
+
+@app.get("/usage/tokens")
+def usage_tokens():
+    return _get_token_usage()
+
+
+@app.post("/usage/tokens/reset")
+def usage_tokens_reset():
+    _reset_token_usage()
+    return {"status": "reset"}
+
+
+@app.get("/usage/budget")
+def usage_budget(repo: str = ""):
+    usage = _get_token_usage()
+    total_cost = sum(
+        p.get("cost_usd", 0.0)
+        for p in usage.get("by_provider", {}).values()
+        if isinstance(p, dict)
+    )
+    return _check_budget(
+        current_tokens=usage.get("total_tokens", 0),
+        current_cost_usd=total_cost,
+        repo=repo,
+    )
+
+
+@app.get("/usage/budget/limits")
+def usage_budget_limits(repo: str = ""):
+    return _get_budget_limits(repo)
 
 
 @app.on_event("shutdown")
