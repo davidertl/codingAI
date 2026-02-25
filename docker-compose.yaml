@@ -1,6 +1,22 @@
-version: "3.9"
+# ============================================================================
+# codingAI Docker Compose
+# ============================================================================
+#
+# QUICK START
+# ============================================================================
+#
+#   docker compose up -d                                    # API + Vault
+#   docker compose --profile local-llm up -d               # + Ollama (CPU)
+#   docker compose --profile local-llm-gpu up -d           # + Ollama (GPU)
+#   docker compose --profile local-llm --profile model-setup up -d  # + pull model
+#   docker compose --profile search up -d searxng           # + SearXNG on demand
+#
+# ============================================================================
 
 services:
+  # ---------------------------------------------------------------------------
+  # codingai-api — always starts (no profile)
+  # ---------------------------------------------------------------------------
   codingai-api:
     build:
       context: .
@@ -8,47 +24,153 @@ services:
     container_name: codingai-api
     ports:
       - "${CODINGAI_HTTP_PORT:-8000}:8000"
+    depends_on:
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    env_file:
+      - path: ./ai-agent/.env
+        required: false
     environment:
+      # Docker-internal overrides (values that differ from .env defaults)
       - PORT=8000
-      - TARGET_REPOS=${TARGET_REPOS:-}
-      - RUN_ALL_REPOS=${RUN_ALL_REPOS:-false}
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-local,openai}
-      - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
-      - LLM_REQUIRE_HEALTHY=${LLM_REQUIRE_HEALTHY:-true}
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434}
-      - OBS_EVENT_LOG_ENABLED=${OBS_EVENT_LOG_ENABLED:-true}
-      - ORCHESTRATOR_V2_ENABLED=${ORCHESTRATOR_V2_ENABLED:-true}
-      - PROMPT_SAFETY_ENABLED=${PROMPT_SAFETY_ENABLED:-true}
       - SEARX_URL=${SEARX_URL:-http://searxng:8080}
       - CODINGAI_DB_FILE=${CODINGAI_DB_FILE:-/app/ai-agent/db/state.db}
-      - DRY_RUN=${DRY_RUN:-false}
-      - SELF_TASK_ENABLED=${SELF_TASK_ENABLED:-true}
-      - SELF_TASK_ISSUE_ENABLED=${SELF_TASK_ISSUE_ENABLED:-false}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
-      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-}
-      - LOCAL_LLM_API_MODE=${LOCAL_LLM_API_MODE:-chat}
+      # Vault secret management (activate with VAULT_ENABLED=true + profile "vault")
+      - VAULT_ENABLED=${VAULT_ENABLED:-false}
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - VAULT_TOKEN=${VAULT_TOKEN:-}
     volumes:
-      - ./ai-agent/.env:/app/ai-agent/.env
       - ./ai-agent/.agent:/app/ai-agent/.agent
-      - ./ai-agent/github_app:/app/ai-agent/github_app
+      - codingai-github_app:/app/ai-agent/github_app
       - ./ai-agent/logs:/app/ai-agent/logs
       - ./ai-agent/state.json:/app/ai-agent/state.json
       - codingai-db:/app/ai-agent/db
-      - ./workspaces:/app/workspaces
+      - codingai-workspaces:/app/workspaces
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - codingai-net
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # vault — always starts (no profile, required by API)
+  # ---------------------------------------------------------------------------
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: codingai-vault
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-codingai-dev-token}
+      VAULT_DEV_LISTEN_ADDRESS: "${VAULT_DEV_LISTEN_ADDRESS:-0.0.0.0:8200}"
+      VAULT_ADDR: "${VAULT_ADDR:-http://127.0.0.1:8200}"
+    ports:
+      - "${VAULT_PORT:-8200}:8200"
+    volumes:
+      - vault-data:/vault/file
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - codingai-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ollama — CPU-only via --profile local-llm
+  # ---------------------------------------------------------------------------
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:latest
     container_name: codingai-ollama
     profiles: ["local-llm"]
+    environment:
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-24h}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-2}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-4}
+      - OLLAMA_GPU_OVERHEAD=${OLLAMA_GPU_OVERHEAD:-0}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-data:/root/.ollama
+      - ollama-models:/models
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - codingai-net
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # ollama-gpu — GPU-accelerated via --profile local-llm-gpu
+  # Same config as ollama but with NVIDIA GPU passthrough.
+  # Requires NVIDIA Container Toolkit on the host.
+  # ---------------------------------------------------------------------------
+  ollama-gpu:
+    image: ollama/ollama:latest
+    container_name: codingai-ollama
+    profiles: ["local-llm-gpu"]
+    environment:
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-24h}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-2}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-4}
+      - OLLAMA_GPU_OVERHEAD=${OLLAMA_GPU_OVERHEAD:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+      - ollama-models:/models
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - codingai-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # searxng — on-demand via --profile search
+  # ---------------------------------------------------------------------------
   searxng:
     image: searxng/searxng:latest
     container_name: codingai-searxng
@@ -59,9 +181,62 @@ services:
       - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8080}/
     volumes:
       - searxng-data:/etc/searxng
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - codingai-net
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # MODEL SETUP (on-demand via --profile model-setup)
+  # ---------------------------------------------------------------------------
+  # One-shot service that pulls the configured model into Ollama.
+  # Works with either local-llm (CPU) or local-llm-gpu profile.
+  # Usage:
+  #   docker compose --profile local-llm --profile model-setup up -d
+  #   docker compose logs -f setup-default-model   # watch progress
+  #
+  # Override model: LOCAL_LLM_MODEL=mistral:7b docker compose --profile ...
+  # ---------------------------------------------------------------------------
+  setup-default-model:
+    profiles: ["model-setup"]
+    image: ollama/ollama:latest
+    container_name: codingai-setup-model
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+      ollama-gpu:
+        condition: service_healthy
+        required: false
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        MODEL="${LOCAL_LLM_MODEL:-tinyllama:1.1b}"
+        echo "==> Pulling model: $$MODEL"
+        ollama pull $$MODEL
+        echo "==> Done! Model ready: $$MODEL"
+        echo ""
+        echo "==> Available models:"
+        ollama list
+    networks:
+      - codingai-net
+
 volumes:
+  vault-data:
   ollama-data:
+  ollama-models:
   codingai-db:
+  codingai-workspaces:
+  codingai-github_app:
   searxng-data:
+
+networks:
+  codingai-net:
+    driver: bridge

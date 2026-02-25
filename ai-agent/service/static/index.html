@@ -1242,7 +1242,8 @@
       el.setupStatus.className = ok ? "chip ok" : "chip warn";
       el.setupStatus.textContent = ok ? "READY" : "INCOMPLETE";
       el.setupMeta.textContent = `owner=${s.has_owner ? "Y" : "N"} app=${s.has_app_id ? "Y" : "N"} install=${s.has_installation_id ? "Y" : "N"} pem=${s.pem_exists ? "Y" : "N"}`;
-      el.pemStatus.textContent = s.pem_exists ? "PEM present (0600)" : "PEM missing";
+      const vaultInfo = v.vault_enabled ? (v.vault_connected ? " | vault=connected" : " | vault=disconnected") : "";
+      el.pemStatus.textContent = (s.pem_exists ? "PEM present" : "PEM missing") + vaultInfo;
       el.llmSetupStatus.textContent = `provider=${v.llm_provider || "-"} order=${v.llm_provider_order || "-"} profile=${v.local_llm_profile || "-"} local_models=${localModelsCount} openai_key=${v.openai_api_key_set ? "set" : "missing"} local_key=${v.local_llm_api_key_set ? "set" : "missing"}`;
 
       if (el.githubSetupHint) {
@@ -2287,7 +2288,7 @@
       const metaEl = document.getElementById("researchMeta");
       if (resultsEl) resultsEl.innerHTML = "<em>Searching…</em>";
       try {
-        const data = await fetchJson(`/research?q=${encodeURIComponent(query)}`);
+        const data = await fetchJson(`/research?query=${encodeURIComponent(query)}`);
         const results = data.results || [];
         if (metaEl) metaEl.textContent = `${results.length} results`;
         if (!results.length) {

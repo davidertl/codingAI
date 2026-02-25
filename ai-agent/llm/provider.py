@@ -3,11 +3,8 @@ import os
 import time
 
 import requests
-from dotenv import load_dotenv
 
-from paths import ENV_FILE, LOGS_DIR
-
-load_dotenv(str(ENV_FILE))
+from paths import LOGS_DIR
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _VALID_PROVIDERS = {"openai", "local"}

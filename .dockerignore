@@ -10,4 +10,5 @@ ai-agent/venv
 workspaces
 ai-agent/state.json
 ai-agent/logs
+ai-agent/.env
 ai-agent/github_app/*.pem

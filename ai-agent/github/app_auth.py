@@ -2,11 +2,9 @@ import jwt
 import time
 import requests
 import os
-from dotenv import load_dotenv
 
-from paths import ENV_FILE, GITHUB_APP_PEM_FILE
-
-load_dotenv(str(ENV_FILE))
+from core.secret_store import secrets as secret_store
+from paths import GITHUB_APP_PEM_FILE
 
 PRIVATE_KEY_PATH = str(GITHUB_APP_PEM_FILE)
 
@@ -14,33 +12,23 @@ _cached_token = None
 _token_expiry = 0
 
 
-def _read_env_file() -> dict:
-    values = {}
-    if not os.path.exists(str(ENV_FILE)):
-        return values
-    with open(str(ENV_FILE), "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            values[k.strip()] = v.strip()
-    return values
-
-
 def _config_value(key: str) -> str:
-    # Prefer .env so setup changes are effective without process restart.
-    file_values = _read_env_file()
-    return file_values.get(key, os.getenv(key, "")).strip()
+    """Read a config/secret value.  Vault → os.environ fallback."""
+    return secret_store.read(key)
 
 
 def _generate_jwt():
-    with open(PRIVATE_KEY_PATH, "r") as f:
-        private_key = f.read()
+    # Try reading PEM from Vault first, then fall back to disk
+    pem_content = secret_store.read_pem()
+    if pem_content:
+        private_key = pem_content.decode("utf-8")
+    else:
+        with open(PRIVATE_KEY_PATH, "r") as f:
+            private_key = f.read()
 
     app_id = _config_value("GITHUB_APP_ID")
     if not app_id:
-        raise Exception("Missing GITHUB_APP_ID in environment or .env")
+        raise Exception("Missing GITHUB_APP_ID in environment or Vault")
 
     payload = {
         "iat": int(time.time()) - 60,

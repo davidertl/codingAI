@@ -68,6 +68,7 @@ from llm.provider import ensure_llm_ready, get_llm_runtime_status, get_local_mod
 import llm.provider as llm_provider_runtime
 from llm.chat_llm import chat_completion, chat_completion_stream, route_for_task
 from paths import ENV_FILE, GITHUB_APP_PEM_FILE, setup_status
+from core.secret_store import secrets as secret_store
 from github.app_auth import get_installation_token
 from github.repo_manager import list_installation_repos
 
@@ -328,15 +329,18 @@ def _repo_budget_status(repo: str) -> dict:
 
 
 def _read_env_entries() -> dict:
-    existing = {}
-    if os.path.exists(ENV_FILE):
-        with open(ENV_FILE, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=", 1)
-                    existing[k] = v
-    return existing
+    """Read current config entries.  Vault-first, then os.environ fallback."""
+    vault_secrets = secret_store.read_all()
+    if vault_secrets:
+        return vault_secrets
+    # Fallback: return os.environ snapshot of known config keys.
+    _KNOWN_KEYS = [
+        "GITHUB_OWNER", "GITHUB_APP_ID", "GITHUB_INSTALLATION_ID",
+        "LLM_PROVIDER", "LLM_PROVIDER_ORDER", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+        "LOCAL_LLM_BASE_URL", "LOCAL_LLM_API_MODE", "LOCAL_LLM_PROFILE",
+        "LOCAL_LLM_MODEL", "LOCAL_LLM_API_KEY",
+    ]
+    return {k: os.environ[k] for k in _KNOWN_KEYS if k in os.environ}
 
 
 def _read_env_value(env_values: dict, key: str, default: str = "") -> str:
@@ -377,7 +381,14 @@ def metrics():
 
 @app.get("/setup/status")
 def setup_status_api():
-    return setup_status()
+    result = setup_status()
+    result["vault"] = secret_store.health()
+    return result
+
+
+@app.get("/vault/health")
+def vault_health_api():
+    return secret_store.health()
 
 
 @app.get("/setup/values")
@@ -403,6 +414,8 @@ def setup_values_api():
     }
     if local_model_error:
         payload["local_model_error"] = local_model_error
+    payload["vault_enabled"] = secret_store.enabled
+    payload["vault_connected"] = secret_store.is_available()
     return payload
 
 
@@ -481,15 +494,11 @@ def _normalize_http_base_url(value: str, *, field_name: str) -> str:
 
 
 def _write_env_entries(entries: dict):
-    existing = _read_env_entries()
+    """Persist secret/config entries via Vault (or in-memory when Vault disabled)."""
     sanitized = {}
-    for key, value in existing.items():
-        sanitized[_sanitize_env_key(key)] = _sanitize_env_value(value)
     for key, value in entries.items():
         sanitized[_sanitize_env_key(key)] = _sanitize_env_value(value)
-    lines = [f"{k}={v}\n" for k, v in sanitized.items()]
-    with open(ENV_FILE, "w", encoding="utf-8") as f:
-        f.writelines(lines)
+    secret_store.write(sanitized)
 
 
 class ThreadCreatePayload(BaseModel):
@@ -516,6 +525,8 @@ class MessageCreatePayload(BaseModel):
     content: str = Field(..., min_length=1, max_length=20000)
     task_type: str | None = Field(default=None, max_length=30)
     stream: bool = False
+    attachment_ids: list[int] = Field(default_factory=list)
+    snippet_attachments: list[SnippetAttachmentPayload] = Field(default_factory=list)
 
 
 class RulesPayload(BaseModel):
@@ -793,8 +804,8 @@ def setup_github(
         _sync_process_env(updates)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Unable to write env file: {e.strerror or str(e)}") from e
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(status_code=500, detail=f"Unable to save secrets: {e}") from e
     record_event(
         "setup_github_updated",
         status="ok",
@@ -820,8 +831,8 @@ def setup_github_clear():
         manager.stop_all()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Unable to write env file: {e.strerror or str(e)}") from e
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(status_code=500, detail=f"Unable to save secrets: {e}") from e
 
     record_event(
         "setup_github_cleared",
@@ -901,8 +912,8 @@ def setup_llm(
         _refresh_llm_runtime()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Unable to write env file: {e.strerror or str(e)}") from e
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(status_code=500, detail=f"Unable to save secrets: {e}") from e
 
     record_event(
         "setup_llm_updated",
@@ -935,31 +946,32 @@ async def setup_pem(pem: UploadFile = File(...)):
     if b"BEGIN" not in content or b"PRIVATE KEY" not in content:
         raise HTTPException(status_code=400, detail="PEM format not recognized")
     overwrite_allowed = os.getenv("SETUP_PEM_OVERWRITE", "true").strip().lower() in _TRUTHY
-    pem_exists = GITHUB_APP_PEM_FILE.exists()
+    pem_exists = GITHUB_APP_PEM_FILE.exists() or secret_store.has_pem()
     if pem_exists and not overwrite_allowed:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"PEM already exists at {GITHUB_APP_PEM_FILE}. "
-                "Overwrite blocked by SETUP_PEM_OVERWRITE=false."
-            ),
+            detail="PEM already exists. Overwrite blocked by SETUP_PEM_OVERWRITE=false.",
         )
+    stored_in = "vault" if secret_store.enabled else "file"
     try:
-        os.makedirs(GITHUB_APP_PEM_FILE.parent, exist_ok=True)
-        with open(GITHUB_APP_PEM_FILE, "wb") as f:
-            f.write(content)
-        os.chmod(GITHUB_APP_PEM_FILE, 0o600)
-    except OSError as e:
+        if secret_store.enabled:
+            secret_store.write_pem(content)
+        else:
+            os.makedirs(GITHUB_APP_PEM_FILE.parent, exist_ok=True)
+            with open(GITHUB_APP_PEM_FILE, "wb") as f:
+                f.write(content)
+            os.chmod(GITHUB_APP_PEM_FILE, 0o600)
+    except (OSError, RuntimeError) as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unable to save PEM at {GITHUB_APP_PEM_FILE}: {e.strerror or str(e)}",
+            detail=f"Unable to save PEM ({stored_in}): {e}",
         ) from e
     fingerprint = hashlib.sha256(content).hexdigest()
     record_event(
         "setup_pem_uploaded",
         status="ok",
         data={
-            "pem_path": str(GITHUB_APP_PEM_FILE),
+            "stored_in": stored_in,
             "pem_size": len(content),
             "fingerprint_prefix": fingerprint[:16],
             "replaced_existing": pem_exists,
@@ -2496,6 +2508,17 @@ def self_tasks_dismiss(task_id: int):
 def self_tasks_scan():
     result = _run_self_task_scan()
     return {"time_utc": _utc_now_iso(), **result}
+
+
+@app.on_event("startup")
+def _startup_vault_sync():
+    """On boot, load Vault secrets into os.environ so all modules see them."""
+    if secret_store.enabled:
+        try:
+            count = secret_store.sync_to_environ()
+            record_event("vault_startup_sync", status="ok", data={"keys_synced": count})
+        except Exception as exc:
+            record_event("vault_startup_sync", status="error", data={"error": str(exc)[:200]})
 
 
 @app.on_event("shutdown")

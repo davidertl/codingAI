@@ -6,8 +6,6 @@ import copy
 import hashlib
 from datetime import datetime, timedelta, timezone
 
-from dotenv import load_dotenv
-
 from core.observability import inc_counter, observe_duration_ms, record_event, set_gauge
 from core.policy import get_policy_snapshot as load_policy_snapshot
 from core.policy import get_repo_policy
@@ -51,7 +49,7 @@ from github.repo_manager import (
 from github.app_auth import get_installation_token
 from llm.provider import ensure_llm_ready, get_llm_runtime_status
 from llm.patch_llm import propose_patch_ops, propose_test_patch_ops
-from paths import ENV_FILE, STATE_FILE
+from paths import STATE_FILE
 
 AVAILABLE_REPOS = []
 TARGET_REPOS_ENV = os.getenv("TARGET_REPOS", "").strip()
@@ -67,7 +65,6 @@ ORCHESTRATOR_V2_ENABLED = os.getenv("ORCHESTRATOR_V2_ENABLED", "true").strip().l
 PAUSE_WINDOW_SECONDS = int(os.getenv("CODINGAI_PAUSE_WINDOW_SECONDS", "10") or "10")
 MAX_PAUSE_SECONDS = int(os.getenv("CODINGAI_MAX_PAUSE_SECONDS", "300") or "300")
 
-load_dotenv(str(ENV_FILE))
 ORCHESTRATOR_V2 = OrchestratorEngine()
 
 

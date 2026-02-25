@@ -5,7 +5,6 @@ import re
 import time
 
 import requests
-from dotenv import load_dotenv
 from llm.provider import (
     build_llm_request,
     ensure_llm_ready,
@@ -18,10 +17,6 @@ from llm.provider import (
 )
 from llm.rules_instructions import with_rules_instructions
 from llm.prompt_safety import check_prompt_safety
-
-from paths import ENV_FILE
-
-load_dotenv(str(ENV_FILE))
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_429_MAX_RETRIES = int(os.getenv("OPENAI_429_MAX_RETRIES", "4"))
